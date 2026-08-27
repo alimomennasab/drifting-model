@@ -7,9 +7,8 @@ import utils.torch_util as tu
 from imf import iMeanFlow
 from utils.vae_util import VAEWrapper
 from utils.drift_util import compute_sharpener_drift
+from utils.plot import plot_image_triplets
 
-# todo
-# - final display: 3 columns (original image, MF generation, GMD sharpened image)
 
 # load data
 overfit_dataset_path = "/data/ali/imf_latents/train_overfit10.pt" # 10 samples
@@ -81,10 +80,18 @@ with torch.no_grad():
         )
 
     sharpened_latents = y.reshape(latent_shape)
+    real_images = vae.decode(x_batch.to(device)).float()
     generated_images = vae.decode(generated_latents).float()
     sharpened_images = vae.decode(sharpened_latents).float()
 
-print(f"Real images: {tuple(y.shape)}")
+print(f"Real images: {tuple(real_images.shape)}")
 print(f"Generated images: {tuple(generated_images.shape)}")
 print(f"Sharpened images: {tuple(sharpened_images.shape)}")
-    
+
+plot_path = plot_image_triplets(
+    real_images,
+    generated_images,
+    sharpened_images,
+    "/data/ali/gmd_gens/",
+)
+print(f"Saved figure to {plot_path}")

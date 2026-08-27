@@ -1,6 +1,7 @@
 torch
 torchvision
 diffusers
+matplotlib
 numpy
 requests
 tqdm
