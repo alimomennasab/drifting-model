@@ -95,6 +95,13 @@ From left to right, the columns contain the 10 original reference images, the Me
 
 ![Original, MeanFlow-generated, and GMD-sharpened image comparison](assets/gmd_gens.png)
 
+## Conclusion
+The GMD sharpener is an inexpensive and fast test-time method of preventing MeanFlow generated images from suffering mode-covering induced blurriness. 
+
+## Next Steps
+- Experiment with varying amounts of sharpening steps
+- Retrain the MeanFlow backbone on a larger dataset 
+
 ## Project layout
 
 ```text
