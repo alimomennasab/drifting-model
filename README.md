@@ -21,13 +21,13 @@ The model checkpoint and dataset batch paths are configured directly in
 ## GMD sharpener
 Instead of training a GMD model, we utilize its drift objective as an inference-time image sharpener.
 
-For a generated latent \(y\) and real reference latents
-\(\mathcal{R}=\{R_j\}\), the sharpener performs the following operations.
+For a generated latent $y$ and real reference latents
+$\mathcal{R}=\{R_j\}$, the sharpener performs the following operations.
 
 **1. Attraction toward nearby real samples**
 
 $$
-a(y)=\sum_j \operatorname{softmax}_j\!\left(-\frac{\|y-R_j\|_2^2}{2\tau_k^2}\right)R_j
+a(y)=\sum_j \mathrm{softmax}_j\!\left(-\frac{\|y-R_j\|_2^2}{2\tau_k^2}\right)R_j
 $$
 
 **2. Repulsion between generated samples**
