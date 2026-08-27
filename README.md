@@ -89,6 +89,11 @@ one MeanFlow evaluation
         -> comparison plot
 ```
 
+## Plot results
+
+From left to right, the columns contain the 10 original reference images, the MeanFlow-generated images, and the GMD-sharpened images.
+
+![Original, MeanFlow-generated, and GMD-sharpened image comparison](assets/gmd_gens.png)
 
 ## Project layout
 
