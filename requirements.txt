@@ -1,0 +1,10 @@
+torch
+torchvision
+diffusers
+numpy
+requests
+tqdm
+einops
+triton
+torch-fidelity
+muon-optimizer
