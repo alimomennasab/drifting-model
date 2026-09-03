@@ -7,7 +7,7 @@ MeanFlow produces an image latent in one inference pass, and GMD applies several
 
 ## MeanFlow model
 
-We use a pretrained MeanFlow model as the generation backbone. The current script loads a trained
+We use a pretrained MeanFlow model as the generation backbone. The backbone can be trained with `train_imf.py`. The current script loads a trained
 `imfDiT_B_2` checkpoint using the `xpred` parameterization and the DDE
 derivative estimator. Instead of generating images in pixel space, we generate in latent space. The single-step generation flow is as follows:
 
@@ -79,7 +79,7 @@ sharpened latents are decoded with the VAE and plotted side by side.
 
 ## Inference-time flow
 
-To reiterate, this implementation does **not** train MeanFlow, GMD, the VAE, or any other network. It loads a frozen VAE and frozen MeanFlow, and performs direct tensor updates on its generated latent samples with `torch.no_grad()`.
+To reiterate, the drifting does **not** train MeanFlow, GMD, the VAE, or any other network. It loads a frozen VAE and frozen MeanFlow, and performs direct tensor updates on its generated latent samples with `torch.no_grad()`.
 
 
 ```text
@@ -106,6 +106,7 @@ The GMD sharpener is an inexpensive and fast test-time method of preventing Mean
 
 ```text
 drift.py                  End-to-end generation and sharpening script
+train_imf.py              Train the MeanFlow model backbone
 imf.py                    MeanFlow model and sampling logic
 models/                   MeanFlow neural-network components
 utils/drift_util.py       Attraction, repulsion, and drift computations
@@ -121,9 +122,16 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
+If you don't have a pretrained MeanFlow checkpoint, create one with:
+```bash
+python train_imf.py --derivative dde --experiment-name ... --batch-file ...
+```
+
 Update the checkpoint, reference-data, and output paths in `drift.py`, then
 run:
 
 ```bash
-python drift.py
+python drift.py \
+  --dataset-dir /path/to/batch.pt \
+  --checkpoint-path /path/to/model.pt
 ```
