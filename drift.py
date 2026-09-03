@@ -101,7 +101,7 @@ def main():
         real_images,
         generated_images,
         sharpened_images,
-        args.out_dir + f"gmd_gens_{len(x_batch)}samples.png",
+        args.out_dir + f"gmd_gens_{len(x_batch)}samples_{len(y_batch)classes}.png",
     )
     print(f"Saved figure to {plot_path}")
 
