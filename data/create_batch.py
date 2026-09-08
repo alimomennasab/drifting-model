@@ -4,9 +4,51 @@ import torch
 from latent_dataset import ShardedLatentDataset
 
 # Create a latent dataset of n samples and labels
-# note: we only have a dataset containing 10 classes (0-9) for now
+"""
+CUDA_VISIBLE_DEVICES=6 python create_batch.py \
+    --data-root "/data/ali/imf_latents/train_imagenet" \
+    --n-samples 30 \
+    --n-classes 15 \
+    --class-select random
+"""
 
-# python create_batch.py --n-samples 50 --n-classes 10
+
+def select_labels(available, n_classes, mode, generator):
+    """Pick class IDs from sorted `available`.
+
+    ImageNet folders are WordNet-ordered, so consecutive IDs are often similar
+    (e.g. many bird species). Prefer ``spaced`` to spread picks across the list.
+    """
+    if mode == "sequential":
+        return available[:n_classes]
+    if mode == "random":
+        perm = torch.randperm(len(available), generator=generator)[:n_classes]
+        return sorted(available[i] for i in perm.tolist())
+    if mode == "spaced":
+        if n_classes == 1:
+            return [available[len(available) // 2]]
+        # Evenly spaced indices over the sorted class list.
+        indices = [
+            round(i * (len(available) - 1) / (n_classes - 1))
+            for i in range(n_classes)
+        ]
+
+        chosen = []
+        used = set()
+        for idx in indices:
+            if idx not in used:
+                chosen.append(available[idx])
+                used.add(idx)
+
+        # Fill any remaining from unused slots farthest from chosen.
+        if len(chosen) < n_classes:
+            remaining = [c for i, c in enumerate(available) if i not in used]
+            chosen.extend(remaining[: n_classes - len(chosen)])
+        return chosen
+
+    raise ValueError(f"Unknown --class-select mode: {mode!r}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--n-samples", type=int, default=10)
@@ -17,14 +59,25 @@ def main():
         "--out-dir",
         default="/data/ali/imf_latents/",
     )
+    parser.add_argument(
+        "--class-select",
+        choices=["spaced", "random", "sequential"],
+        default="spaced",
+        help=(
+            "How to choose which classes to keep. "
+            "'spaced' spreads picks across available IDs"
+            "'random' samples uniformly. "
+            "'sequential' takes the first N sorted IDs."
+        ),
+    )
     args = parser.parse_args()
 
     if args.n_samples < 1:
         raise ValueError("--n-samples must be positive")
-    if not 1 <= args.n_classes <= min(args.n_samples, 10):
-        raise ValueError(
-            "--n-classes must be between 1 and min(n-samples, 10)"
-        )
+    if args.n_classes < 1:
+        raise ValueError("--n-classes must be positive")
+    if args.n_classes > args.n_samples:
+        raise ValueError("--n-classes cannot exceed --n-samples")
 
     out_path = os.path.join(
         args.out_dir,
@@ -33,8 +86,26 @@ def main():
 
     torch.manual_seed(args.seed)
     generator = torch.Generator().manual_seed(args.seed)
-    labels = torch.randperm(10, generator=generator)[:args.n_classes].tolist()
-    print("labels: ", labels)
+
+    ds = ShardedLatentDataset(args.data_root, use_flip=False)
+
+    # See what labels are present in the shards
+    available = set()
+    for path in ds.shard_paths:
+        shard = torch.load(path, map_location="cpu", weights_only=False)
+        available.update(int(y) for y in shard["labels"].tolist())
+    available = sorted(available)
+    if args.n_classes > len(available):
+        raise ValueError(
+            f"--n-classes={args.n_classes} but dataset only has "
+            f"{len(available)} classes: {available}"
+        )
+
+    labels = select_labels(available, args.n_classes, args.class_select, generator)
+    print(
+        f"Available classes: {len(available)}; "
+        f"selected ({args.class_select}): {labels}"
+    )
 
     samples_per_label, remainder = divmod(args.n_samples, args.n_classes)
     target_counts = {
@@ -43,9 +114,7 @@ def main():
     }
     collected_counts = {label: 0 for label in labels}
 
-    ds = ShardedLatentDataset(args.data_root, use_flip=False)
     xs, ys = [], []
-
     for i in range(len(ds)):
         x, y = ds[i]
         if y not in target_counts or collected_counts[y] >= target_counts[y]:
