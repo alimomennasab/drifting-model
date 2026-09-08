@@ -1,7 +1,11 @@
 """"
-    CUDA_VISIBLE_DEVICES=7 python drift.py \
+    CUDA_VISIBLE_DEVICES=6 python drift.py \
+    --dataset-dir "/data/ali/imf_latents/train_overfit30_15classes.pt" \
+    --checkpoint-path "/data/ali/imf_runs/overfit_dde_x_pred_lpips_ploss_muon_20000steps_30samples15classes.pt"
+
+    CUDA_VISIBLE_DEVICES=6 python drift.py \
     --dataset-dir "/data/ali/imf_latents/train_overfit30_10classes.pt" \
-    --checkpoint-path "/data/ali/imf_runs/overfit_dde_x_pred_lpips_ploss_muon_20000steps_30samples_model.pt"
+    --checkpoint-path "/data/ali/imf_runs/overfit_dde_x_pred_lpips_ploss_muon_20000steps_30samples10classes.pt"
 
 """
 
@@ -101,7 +105,7 @@ def main():
         real_images,
         generated_images,
         sharpened_images,
-        args.out_dir + f"gmd_gens_{len(x_batch)}samples_{len(y_batch)classes}.png",
+        args.out_dir + f"gmd_gens_{len(x_batch)}samples_{y_batch.unique().numel()}classes.png",
     )
     print(f"Saved figure to {plot_path}")
 
