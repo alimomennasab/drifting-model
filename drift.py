@@ -17,22 +17,47 @@ from utils.vae_util import VAEWrapper
 from utils.drift_util import compute_sharpener_drift
 from utils.plot import plot_image_triplets
 
+# todo
+# - load all latent images at once
+# - create a bank for each class
+    # bank_by_class = {
+    #     class_id: bank_x[bank_y == class_id]
+    #     for class_id in trained_classes
+    # }
+# - compute drift w/ held-out samples, and only of same class w/ current gen
+
+
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--dataset-dir", required=True)
     p.add_argument("--checkpoint-path", required=True)
     p.add_argument("--out-dir", default="/data/ali/gmd_gens/")
+    p.add_argument("--full-img-bank", default="/data/ali/imf_latents/train_imagenet", help="All images available for positive image bank creation, stored in latent space as shards")
     args = p.parse_args()
+
+
+    # config
+    k = 5  # gens per class
+    steps = 10
+    temperatures = torch.linspace(0.3, 0.08, steps, device=device)
+    step_size = 0.2
+    lambda_rep = 0.1
+    sigma_r = 1.5
+    seeds = torch.arange(k).repeat(len(unique_labels)) # [0,1,2,3,4, 0,1,2,3,4, ...]
+    cfg_omega = 48.0
+    interval_min = 0.4
+    interval_max = 0.65
 
     # load data
     ds = torch.load(args.dataset_dir, map_location="cpu")
     print(ds.keys())
     x_batch = ds["x_batch"] # images
     y_batch = ds["y_batch"] # labels
+    gen_labels = unique_labels.repeat_interleave(k) # [c0,c0,c0,c0,c0, c1,c1,..., c10,...]
     print(x_batch.shape)
     print(y_batch.shape)
-    num_images = len(x_batch)
+    n_sample = len(unique_labels) * k  # 75
 
     # load meanflow model alongside VAE decoder & feature extractor 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -42,26 +67,14 @@ def main():
     mf.to(device)
     mf.eval()
 
-    vae = VAEWrapper(decode_batch_size=num_images)
+    vae = VAEWrapper(decode_batch_size=16)
 
-
-    # config
-    steps = 10
-    temperatures = torch.linspace(0.3, 0.08, steps, device=device)
-    step_size = 0.2
-    lambda_rep = 0.1
-    sigma_r = 1.5
-    sample_seed = 0 # repeating the seed gives every class exactly the same initial noise.
-    seeds = torch.full((num_images,), sample_seed, dtype=torch.long)
-    cfg_omega = 48.0
-    interval_min = 0.4
-    interval_max = 0.65
 
 
     # decode latents to image for feature extraction
     with torch.no_grad():
         generated_latents = mf.generate(
-            n_sample=num_images,
+            n_sample=n_samples,
             rng=tu.BatchGenerator(device=device, seeds=seeds),
             num_steps=1,
             omega=cfg_omega,
