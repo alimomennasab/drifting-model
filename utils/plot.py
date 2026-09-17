@@ -56,3 +56,63 @@ def plot_image_triplets(
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return output_path
+
+
+def plot_class_comparison(
+    positive_images: torch.Tensor,
+    generated_images: torch.Tensor,
+    sharpened_images: torch.Tensor,
+    output_path: str | Path,
+    class_id: int | None = None,
+) -> Path:
+    """Plot one class as three rows: positive image bank, generated, sharpened."""
+    rows = (
+        ("Positive image bank", positive_images),
+        ("Generated", generated_images),
+        ("Sharpened", sharpened_images),
+    )
+    for title, images in rows:
+        if images.ndim != 4:
+            raise ValueError(f"{title} images must have shape [B, C, H, W].")
+
+    display_rows = [(title, _prepare_images(images)) for title, images in rows]
+    max_n = max(images.shape[0] for _, images in display_rows)
+    n_rows = len(display_rows)
+    fig = plt.figure(figsize=(1.8 * max_n + 0.9, 2.0 * n_rows))
+    grid = fig.add_gridspec(
+        n_rows,
+        max_n + 1,
+        width_ratios=[0.55] + [1.0] * max_n,
+        wspace=0.05,
+        hspace=0.12,
+    )
+
+    for row, (title, images) in enumerate(display_rows):
+        label_ax = fig.add_subplot(grid[row, 0])
+        label_ax.axis("off")
+        label_ax.text(
+            1.0,
+            0.5,
+            title,
+            ha="right",
+            va="center",
+            fontsize=11,
+            fontweight="bold",
+            transform=label_ax.transAxes,
+        )
+
+        for col in range(max_n):
+            ax = fig.add_subplot(grid[row, col + 1])
+            ax.axis("off")
+            if col < images.shape[0]:
+                cmap = "gray" if images[col].ndim == 2 else None
+                ax.imshow(images[col], cmap=cmap)
+
+    if class_id is not None:
+        fig.suptitle(f"Class {class_id}", fontsize=12, y=0.98)
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
