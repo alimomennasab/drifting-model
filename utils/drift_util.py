@@ -33,7 +33,7 @@ def compute_sharpener_drift(
     y,
     real_data,
     tau,
-    lambda_rep=0.1,
+    lambda_rep=0.2,
     sigma_r=1.5,
 ):
     # y: one-step sample
