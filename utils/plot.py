@@ -59,6 +59,7 @@ def plot_image_triplets(
 
 
 def plot_class_comparison(
+    drift_steps: int,
     positive_images: torch.Tensor,
     generated_images: torch.Tensor,
     sharpened_images: torch.Tensor,
@@ -109,7 +110,7 @@ def plot_class_comparison(
                 ax.imshow(images[col], cmap=cmap)
 
     if class_id is not None:
-        fig.suptitle(f"Class {class_id}", fontsize=12, y=0.98)
+        fig.suptitle(f"Class {class_id} | {drift_steps} Drift Steps", fontsize=12, y=0.98)
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

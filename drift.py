@@ -1,5 +1,6 @@
 """"
-    CUDA_VISIBLE_DEVICES=1 python drift.py \
+    CUDA_VISIBLE_DEVICES=7 python drift.py \
+    --drift-steps 10 \
     --dataset-dir "/data/ali/imf_latents/train_overfit30_10classes.pt" \
     --checkpoint-path "/data/ali/imf_runs/overfit_dde_x_pred_lpips_ploss_muon_20000steps_30samples10classes.pt" \
     --pos-img-bank "/data/ali/imf_latents/positive_bank_30samples_10classes.pt"
@@ -19,6 +20,7 @@ from utils.plot import plot_class_comparison
 
 def main():
     p = argparse.ArgumentParser()
+    p.add_argument("--drift-steps", default=10)
     p.add_argument("--dataset-dir", required=True)
     p.add_argument("--checkpoint-path", required=True)
     p.add_argument("--out-dir", default="/data/ali/gmd_gens/")
@@ -46,7 +48,7 @@ def main():
 
     # config
     k = 5  # gens per class
-    steps = 10
+    steps = int(args.drift_steps)
     temperatures = torch.linspace(0.3, 0.08, steps, device=device)
     step_size = 0.2
     lambda_rep = 0.1
@@ -86,6 +88,8 @@ def main():
 
     # inference-time GMD sharpening in MeanFlow's latent space
     sharpened_latents = generated_latents.clone()
+    print(f"PERFORMING {steps} DRIFT STEPS")
+    print(f"TEMPERATURES: {temperatures}")
     with torch.no_grad():
         # for current class: avoid computing drift with own samples -> create mask
         for class_id in unique_labels:
@@ -117,7 +121,7 @@ def main():
 
     run_dir = os.path.join(
         args.out_dir,
-        f"gmd_gens_{len(x_batch)}samples_{y_batch.unique().numel()}classes",
+        f"gmd_gens_{len(x_batch)}samples_{y_batch.unique().numel()}classes_{steps}steps",
     )
     os.makedirs(run_dir, exist_ok=True)
     print(f"Writing class plots to {run_dir}")
@@ -131,6 +135,7 @@ def main():
                 pos_img_bank_dict[key].to(device)
             ).float()
             plot_path = plot_class_comparison(
+                steps,
                 positive_images,
                 generated_images[mask],
                 sharpened_images[mask],
