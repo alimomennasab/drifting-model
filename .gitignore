@@ -6,3 +6,5 @@ wandb/
 *.pth
 *.ckpt
 *.caches*/
+data/.env
+.env
