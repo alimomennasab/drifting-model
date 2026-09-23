@@ -3,7 +3,7 @@
 create_batch.py takes the first N samples of each class for overfit training.
 This script skips those early samples and keeps the rest.
 
-    CUDA_VISIBLE_DEVICES=1 python create_positive_bank.py \
+    CUDA_VISIBLE_DEVICES=6 python create_positive_bank.py \
         --train-batch /data/ali/imf_latents/train_overfit30_10classes.pt \
         --skip-first 5 \
         --out-name positive_bank_30samples_10classes.pt
@@ -68,7 +68,7 @@ def plot_bank(bank, output_path, decode_batch_size=8):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--data-root", default="/data/ali/imf_latents/train_imagenet")
+    p.add_argument("--data-root", default="/data/ali/imf_latents/train")
     p.add_argument("--train-batch", required=True)
     p.add_argument("--skip-first", type=int, default=5)
     p.add_argument("--max-per-class", type=int, default=None)
