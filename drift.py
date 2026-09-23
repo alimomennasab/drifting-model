@@ -1,9 +1,11 @@
 """"
-    CUDA_VISIBLE_DEVICES=7 python drift.py \
+    CUDA_VISIBLE_DEVICES=6 python drift.py \
     --drift-steps 10 \
     --dataset-dir "/data/ali/imf_latents/train_overfit30_10classes.pt" \
     --checkpoint-path "/data/ali/imf_runs/overfit_dde_x_pred_lpips_ploss_muon_20000steps_30samples10classes.pt" \
-    --pos-img-bank "/data/ali/imf_latents/positive_bank_30samples_10classes.pt"
+    --pos-img-bank "/data/ali/imf_latents/positive_bank_30samples_10classes.pt" \
+    --num-y 1000 \
+    --num-y-pos 50
 
 """
 
@@ -18,13 +20,28 @@ from utils.drift_util import compute_sharpener_drift
 from utils.plot import plot_class_comparison
 
 
+def decode_latents(vae, latents, batch_size=8):
+    """Decode latents w/ the VAE in small batches for better memory usage"""
+    chunks = []
+    with torch.no_grad():
+        for start in range(0, len(latents), batch_size):
+            batch = latents[start : start + batch_size]
+            chunks.append(vae.decode(batch).float().cpu())
+            torch.cuda.empty_cache()
+    return torch.cat(chunks, dim=0)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--drift-steps", default=10)
     p.add_argument("--dataset-dir", required=True)
     p.add_argument("--checkpoint-path", required=True)
+    p.add_argument("--num-y", required=True, help="Amount of generations produced **PER CLASS**")
+    p.add_argument("--num-y-pos", required=True, help="Amount of real images in positive image bank **PER CLASS**")
     p.add_argument("--out-dir", default="/data/ali/gmd_gens/")
     p.add_argument("--pos-img-bank", required=True, help="All images available for positive image bank creation, stored in latent space as shards")
+    p.add_argument("--decode-batch-size", type=int, default=8)
+    p.add_argument("--plot-max", type=int, default=8, help="Max images per row in class PNGs")
     args = p.parse_args()
 
     # load meanflow model alongside VAE decoder & feature extractor 
@@ -47,7 +64,8 @@ def main():
 
 
     # config
-    k = 5  # gens per class
+    k = int(args.num_y)  # gens per class
+    k_pos = int(args.num_y_pos) # reals per class
     steps = int(args.drift_steps)
     temperatures = torch.linspace(0.3, 0.08, steps, device=device)
     step_size = 0.2
@@ -64,13 +82,13 @@ def main():
     gen_labels = unique_labels.repeat_interleave(k) # [c0,c0,c0,c0,c0, c1,c1,..., c10,...]
 
     # load positive image bank for drift computation
-    pos_img_bank_dict = torch.load(args.pos_img_bank, map_location="cpu")
-    print(pos_img_bank_dict.keys())
-    print(pos_img_bank_dict['class_0000'].shape)
+    y_pos_img_bank_dict = torch.load(args.pos_img_bank, map_location="cpu")
+    print(y_pos_img_bank_dict.keys())
+    print(y_pos_img_bank_dict['class_0000'].shape)
     # keep only the k first images per class
-    pos_img_bank_dict = {key: latents[:k] for key, latents in pos_img_bank_dict.items()}
-    print(pos_img_bank_dict.keys())
-    print(pos_img_bank_dict['class_0000'].shape)
+    y_pos_img_bank_dict = {key: latents[:k_pos] for key, latents in y_pos_img_bank_dict.items()}
+    print(y_pos_img_bank_dict.keys())
+    print(y_pos_img_bank_dict['class_0000'].shape)
 
     # decode latents to image for feature extraction
     with torch.no_grad():
@@ -97,7 +115,7 @@ def main():
             mask = (gen_labels == class_id)
 
             y = generated_latents[mask].flatten(1) # [k, D] generations w/ current label
-            y_pos = pos_img_bank_dict[key].to(device).flatten(1) # [k_pos, D] held-out positive samples w/ current label
+            y_pos = y_pos_img_bank_dict[key].to(device).flatten(1) # [k_pos, D] held-out positive samples w/ current label
 
             for step, tau in enumerate(temperatures, start=1):
                 drift = compute_sharpener_drift(
@@ -116,33 +134,46 @@ def main():
 
             sharpened_latents[mask] = y.reshape(generated_latents[mask].shape)
 
-        generated_images = vae.decode(generated_latents).float()
-        sharpened_images = vae.decode(sharpened_latents).float()
+    # Free backbone memory
+    del mf
+    torch.cuda.empty_cache()
+
+    generated_images = decode_latents(
+        vae, generated_latents, batch_size=args.decode_batch_size
+    )
+    sharpened_images = decode_latents(
+        vae, sharpened_latents, batch_size=args.decode_batch_size
+    )
+    del generated_latents, sharpened_latents
+    torch.cuda.empty_cache()
 
     run_dir = os.path.join(
         args.out_dir,
-        f"gmd_gens_{len(x_batch)}samples_{y_batch.unique().numel()}classes_{steps}steps",
+        f"gmd_gens_{len(x_batch)}samples_{y_batch.unique().numel()}classes_{k}gens_{steps}steps",
     )
     os.makedirs(run_dir, exist_ok=True)
     print(f"Writing class plots to {run_dir}")
 
-    with torch.no_grad():
-        for class_id in unique_labels.tolist():
-            key = f"class_{class_id:04d}"
-            mask = gen_labels == class_id
+    plot_n = min(args.plot_max, k)
+    for class_id in unique_labels.tolist():
+        key = f"class_{class_id:04d}"
+        mask = gen_labels == class_id
 
-            positive_images = vae.decode(
-                pos_img_bank_dict[key].to(device)
-            ).float()
-            plot_path = plot_class_comparison(
-                steps,
-                positive_images,
-                generated_images[mask],
-                sharpened_images[mask],
-                os.path.join(run_dir, f"{key}.png"),
-                class_id=class_id,
-            )
-            print(f"Saved {plot_path}")
+        positive_images = decode_latents(
+            vae,
+            y_pos_img_bank_dict[key][:plot_n].to(device),
+            batch_size=args.decode_batch_size,
+        )
+        plot_path = plot_class_comparison(
+            steps,
+            len(y_pos_img_bank_dict),
+            positive_images[:plot_n],
+            generated_images[mask][:plot_n],
+            sharpened_images[mask][:plot_n],
+            os.path.join(run_dir, f"{key}.png"),
+            class_id=class_id,
+        )
+        print(f"Saved {plot_path}")
 
 
 if __name__ == "__main__":
