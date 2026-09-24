@@ -1,3 +1,14 @@
+"""Download the first N ImageNet-1k classes from Hugging Face as JPEG folders.
+
+Output layout: <out_root>/<split>/class_{label:04d}/{idx:07d}.jpg
+
+Safe to interrupt and rerun: the stream always restarts from the beginning,
+so each class skips as many images as it already has on disk before saving.
+This relies on the (unshuffled) stream order being the same on every run.
+
+    python download_imagenet.py
+"""
+
 import os
 from pathlib import Path
 
@@ -6,44 +17,33 @@ from dotenv import load_dotenv
 from huggingface_hub import login
 from tqdm import tqdm
 
-load_dotenv(Path(__file__).resolve().parent / ".env")
-token = os.environ.get("HF_TOKEN")
-if not token:
-    raise RuntimeError("Add HF_TOKEN to drifting-model/data/.env")
-login(token=token)
-
-# First N ImageNet classes (labels 0 .. n-1).
-keep_labels = set(range(200))
-
-out_root = "/data/ali/imagenet"
-splits = ["train"]
-max_per_class = 1000
+KEEP_LABELS = set(range(200))
+MAX_PER_CLASS = 1100
+OUT_ROOT = "/data/ali/imagenet"
+SPLITS = ["train"]
 
 
-def existing_counts(split_dir: str) -> dict[int, int]:
-    counts = {k: 0 for k in keep_labels}
-    if not os.path.isdir(split_dir):
-        return counts
-    for y in keep_labels:
+def existing_counts(split_dir):
+    """Number of .jpg files already saved for each kept class."""
+    counts = {}
+    for y in KEEP_LABELS:
         cls_dir = os.path.join(split_dir, f"class_{y:04d}")
-        if not os.path.isdir(cls_dir):
-            continue
-        counts[y] = sum(
-            1 for name in os.listdir(cls_dir) if name.endswith(".jpg")
+        counts[y] = (
+            sum(name.endswith(".jpg") for name in os.listdir(cls_dir))
+            if os.path.isdir(cls_dir)
+            else 0
         )
     return counts
 
 
-for split in splits:
-    split_dir = os.path.join(out_root, split)
+def download_split(split):
+    split_dir = os.path.join(OUT_ROOT, split)
     os.makedirs(split_dir, exist_ok=True)
 
     counts = existing_counts(split_dir)
+    target_total = len(KEEP_LABELS) * MAX_PER_CLASS
     total_saved = sum(counts.values())
-    target_total = len(keep_labels) * max_per_class
-    remaining = {
-        y for y in keep_labels if counts[y] < max_per_class
-    }
+    remaining = {y for y in KEEP_LABELS if counts[y] < MAX_PER_CLASS}
 
     print(
         f"{split}: resume with {total_saved}/{target_total} saved; "
@@ -51,9 +51,10 @@ for split in splits:
     )
     if not remaining:
         print(f"{split}: already complete")
-        continue
+        return
 
-    ds = load_dataset("ILSVRC/imagenet-1k", split=split, streaming=True)
+    ds = load_dataset("ILSVRC/imagenet-1k", split=split, streaming=True).decode(False) # faster download with no decoding
+    seen = {y: 0 for y in KEEP_LABELS}
     pbar = tqdm(ds, desc=f"{split} stream", unit="img")
 
     for ex in pbar:
@@ -64,15 +65,19 @@ for split in splits:
         if y not in remaining:
             continue
 
+        # skip images this class already saved in a previous run
+        seen[y] += 1
+        if seen[y] <= counts[y]:
+            continue
+
         cls_dir = os.path.join(split_dir, f"class_{y:04d}")
         os.makedirs(cls_dir, exist_ok=True)
-
-        idx = counts[y]
-        ex["image"].save(os.path.join(cls_dir, f"{idx:07d}.jpg"), quality=95)
+        with open(os.path.join(cls_dir, f"{counts[y]:07d}.jpg"), "wb") as f:
+            f.write(ex["image"]["bytes"])
         counts[y] += 1
         total_saved += 1
 
-        if counts[y] >= max_per_class:
+        if counts[y] >= MAX_PER_CLASS:
             remaining.discard(y)
 
         pbar.set_postfix(
@@ -84,7 +89,21 @@ for split in splits:
 
     print(
         f"{split}: saved {total_saved}/{target_total} images "
-        f"across {len(keep_labels)} classes (max {max_per_class} each)"
+        f"across {len(KEEP_LABELS)} classes (max {MAX_PER_CLASS} each)"
     )
 
-print("Done.")
+
+def main():
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+    token = os.environ.get("HF_TOKEN")
+    if not token:
+        raise RuntimeError("Add HF_TOKEN to drifting-model/data/.env")
+    login(token=token)
+
+    for split in SPLITS:
+        download_split(split)
+    print("Done.")
+
+
+if __name__ == "__main__":
+    main()
