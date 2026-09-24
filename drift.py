@@ -1,9 +1,9 @@
 """"
 export INCEPTION_WEIGHTS=/data/ali/weights/weights-inception-2015-12-05-6726825d.pth
 
-    CUDA_VISIBLE_DEVICES=7 python drift.py \
+    CUDA_VISIBLE_DEVICES=6 python drift.py \
     --drift-steps 10 \
-    --dataset-dir "/data/ali/imf_latents/train_overfit30_10classes.pt" \
+    --dataset-batch "/data/ali/imf_latents/train_overfit30_10classes.pt" \
     --checkpoint-path "/data/ali/imf_runs/overfit_dde_x_pred_lpips_ploss_muon_20000steps_30samples10classes.pt" \
     --pos-img-bank "/data/ali/imf_latents/positive_bank_30samples_10classes.pt" \
     --num-y 1000 \
@@ -42,13 +42,13 @@ def decode_latents(vae, latents, batch_size=8):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--drift-steps", default=10)
-    p.add_argument("--dataset-dir", required=True)
-    p.add_argument("--checkpoint-path", required=True)
-    p.add_argument("--num-y", required=True, help="Amount of generations produced **PER CLASS**")
-    p.add_argument("--num-y-pos", required=True, help="Amount of real images in positive image bank **PER CLASS**")
-    p.add_argument("--out-dir", default="/data/ali/gmd_gens/")
-    p.add_argument("--pos-img-bank", required=True, help="All images available for positive image bank creation, stored in latent space as shards")
+    p.add_argument("--drift-steps", type=int, default=10)
+    p.add_argument("--dataset-batch", type=str, required=True)
+    p.add_argument("--checkpoint-path", type=str, required=True)
+    p.add_argument("--num-y", type=int, required=True, help="Amount of generations produced **PER CLASS**")
+    p.add_argument("--num-y-pos", type=int, required=True, help="Amount of real images in positive image bank **PER CLASS**")
+    p.add_argument("--out-dir", type=str, default="/data/ali/gmd_gens/")
+    p.add_argument("--pos-img-bank", type=str, required=True, help="All images available for positive image bank creation, stored in latent space.")
     p.add_argument("--decode-batch-size", type=int, default=8)
     p.add_argument("--plot-max", type=int, default=8, help="Max images per row in class PNGs")
     p.add_argument("--fid", action='store_true')
@@ -65,7 +65,7 @@ def main():
     vae = VAEWrapper(decode_batch_size=16)
 
     # load data
-    ds = torch.load(args.dataset_dir, map_location="cpu")
+    ds = torch.load(args.dataset_batch, map_location="cpu")
     print(ds.keys())
     x_batch = ds["x_batch"] # images
     y_batch = ds["y_batch"] # labels
@@ -74,8 +74,8 @@ def main():
 
 
     # config
-    k = int(args.num_y)  # gens per class
-    k_pos = int(args.num_y_pos) # reals per class
+    k = args.num_y  # gens per class
+    k_pos = args.num_y_pos # reals per class
     steps = int(args.drift_steps)
     temperatures = torch.linspace(0.3, 0.08, steps, device=device)
     step_size = 0.2
@@ -184,7 +184,7 @@ def main():
         )
         plot_path = plot_class_comparison(
             steps,
-            len(y_pos_for_drift),
+            k_pos,
             positive_images[:plot_n],
             generated_images[mask][:plot_n],
             sharpened_images[mask][:plot_n],
@@ -218,8 +218,8 @@ def main():
 
         fid_gen = compute_fid_between_features(feat_gen, feat_real)
         fid_sharp = compute_fid_between_features(feat_sharp, feat_real)
-        print(f"FID generated: {fid_gen:.4f}")
-        print(f"FID sharpened: {fid_sharp:.4f}")
+        print(f"FID GENERATED: {fid_gen:.4f}")
+        print(f"FID SHARPENED: {fid_sharp:.4f}")
 
 
 if __name__ == "__main__":
