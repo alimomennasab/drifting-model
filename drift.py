@@ -86,7 +86,7 @@ def main():
     interval_min = 0.4
     interval_max = 0.65
     n_samples = len(unique_labels) * k 
-    skip_first = len(y_batch) // len(unique_labels)  # 30 // 10 = 3
+    skip_first = 5
 
     # create seeds and labels
     seeds = torch.arange(k).repeat(len(unique_labels)) # [0,1,2,3,4, 0,1,2,3,4, ...]
