@@ -1,13 +1,14 @@
 """"
 export INCEPTION_WEIGHTS=/data/ali/weights/weights-inception-2015-12-05-6726825d.pth
 
-    CUDA_VISIBLE_DEVICES=6 python drift.py \
+    CUDA_VISIBLE_DEVICES=7 python drift.py \
     --data-root "/data/ali/imf_latents/train" \
     --drift-steps 10 \
     --train-batch "/data/ali/imf_latents/train_overfit30_10classes.pt" \
     --checkpoint-path "/data/ali/imf_runs/overfit_dde_x_pred_lpips_ploss_muon_20000steps_30samples10classes.pt" \
     --num-y 1000 \
     --num-y-pos 50 \
+    --skip-first 11 \
     --fid
 
 """
@@ -51,6 +52,7 @@ def main():
     p.add_argument("--out-dir", type=str, default="/data/ali/gmd_gens/")
     p.add_argument("--decode-batch-size", type=int, default=8)
     p.add_argument("--plot-max", type=int, default=8, help="Max images per row in class PNGs")
+    p.add_argument("--skip-first", type=int, default=5, help="My train images are the first few images of the dataset, so skip these to ensure no leakage into the drift/fid bank")
     p.add_argument("--fid", action='store_true')
     args = p.parse_args()
 
@@ -86,7 +88,7 @@ def main():
     interval_min = 0.4
     interval_max = 0.65
     n_samples = len(unique_labels) * k 
-    skip_first = 5
+    skip_first = args.skip_first
 
     # create seeds and labels
     seeds = torch.arange(k).repeat(len(unique_labels)) # [0,1,2,3,4, 0,1,2,3,4, ...]
@@ -95,12 +97,12 @@ def main():
     # load positive image bank for drift computation
     y_pos_img_bank_dict = create_positive_bank(args.data_root, unique_labels.tolist(), skip_first)
     print(y_pos_img_bank_dict.keys())
-    print(y_pos_img_bank_dict['class_0000'].shape)
+    print(next(iter(y_pos_img_bank_dict.values())).shape)
     # only compute drift with the first k_pos images per class
     # the remaining images in the bank are used later for fid computation
     y_pos_for_drift = {key: latents[:k_pos] for key, latents in y_pos_img_bank_dict.items()}
     print(y_pos_for_drift.keys())
-    print(y_pos_for_drift['class_0000'].shape)
+    print(next(iter(y_pos_for_drift.values())).shape)
 
     # generate images in chunks for better memory usage
     gen_batch_size = 64
