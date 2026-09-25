@@ -2,10 +2,10 @@
 export INCEPTION_WEIGHTS=/data/ali/weights/weights-inception-2015-12-05-6726825d.pth
 
     CUDA_VISIBLE_DEVICES=6 python drift.py \
+    --data-root "/data/ali/imf_latents/train" \
     --drift-steps 10 \
-    --dataset-batch "/data/ali/imf_latents/train_overfit30_10classes.pt" \
+    --train-batch "/data/ali/imf_latents/train_overfit30_10classes.pt" \
     --checkpoint-path "/data/ali/imf_runs/overfit_dde_x_pred_lpips_ploss_muon_20000steps_30samples10classes.pt" \
-    --pos-img-bank "/data/ali/imf_latents/positive_bank_30samples_10classes.pt" \
     --num-y 1000 \
     --num-y-pos 50 \
     --fid
@@ -20,7 +20,7 @@ import torch
 import utils.torch_util as tu
 from imf import iMeanFlow
 from utils.vae_util import VAEWrapper
-from utils.drift_util import compute_sharpener_drift
+from utils.drift_util import compute_sharpener_drift, create_positive_bank
 from utils.plot import plot_class_comparison
 from utils.fid import (
     get_inception_model,
@@ -43,12 +43,12 @@ def decode_latents(vae, latents, batch_size=8):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--drift-steps", type=int, default=10)
-    p.add_argument("--dataset-batch", type=str, required=True)
+    p.add_argument("--data-root", type=str, required=True)
+    p.add_argument("--train-batch", type=str, required=True)
     p.add_argument("--checkpoint-path", type=str, required=True)
     p.add_argument("--num-y", type=int, required=True, help="Amount of generations produced **PER CLASS**")
     p.add_argument("--num-y-pos", type=int, required=True, help="Amount of real images in positive image bank **PER CLASS**")
     p.add_argument("--out-dir", type=str, default="/data/ali/gmd_gens/")
-    p.add_argument("--pos-img-bank", type=str, required=True, help="All images available for positive image bank creation, stored in latent space.")
     p.add_argument("--decode-batch-size", type=int, default=8)
     p.add_argument("--plot-max", type=int, default=8, help="Max images per row in class PNGs")
     p.add_argument("--fid", action='store_true')
@@ -65,7 +65,7 @@ def main():
     vae = VAEWrapper(decode_batch_size=16)
 
     # load data
-    ds = torch.load(args.dataset_batch, map_location="cpu")
+    ds = torch.load(args.train_batch, map_location="cpu")
     print(ds.keys())
     x_batch = ds["x_batch"] # images
     y_batch = ds["y_batch"] # labels
@@ -86,13 +86,14 @@ def main():
     interval_min = 0.4
     interval_max = 0.65
     n_samples = len(unique_labels) * k 
+    skip_first = len(y_batch) // len(unique_labels)  # 30 // 10 = 3
 
     # create seeds and labels
     seeds = torch.arange(k).repeat(len(unique_labels)) # [0,1,2,3,4, 0,1,2,3,4, ...]
     gen_labels = unique_labels.repeat_interleave(k) # [c0,c0,c0,c0,c0, c1,c1,..., c10,...]
 
     # load positive image bank for drift computation
-    y_pos_img_bank_dict = torch.load(args.pos_img_bank, map_location="cpu")
+    y_pos_img_bank_dict = create_positive_bank(args.data_root, unique_labels.tolist(), skip_first)
     print(y_pos_img_bank_dict.keys())
     print(y_pos_img_bank_dict['class_0000'].shape)
     # only compute drift with the first k_pos images per class
