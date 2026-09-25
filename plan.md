@@ -1,282 +1,157 @@
-# MeanFlow + Drift Sharpener Experimental Plan
+# MeanFlow + Drift Sharpener: Plan
 
 ## Goal
 
-Evaluate whether a GMD-inspired inference-time drift can improve blurry
-one-step MeanFlow outputs without retraining the MeanFlow backbone.
+Test whether a GMD-style inference-time drift improves one-step MeanFlow
+samples without retraining the backbone. Small-data study on 10–15 ImageNet
+classes; no full-ImageNet training or drifting.
 
-The current study is a small-data proof of concept, not a full ImageNet
-benchmark.
+## Setup
 
-## Available resources
+- Data: 200 ImageNet classes, up to 1,100 unique images/class
+(`/data/ali/imagenet/train`), encoded on one GPU in file order to
+`/data/ali/imf_latents/train` (217,965 latents).
+- Backbones (MeanFlow, muon + LPIPS, 20k steps), checked via their saved
+`batch_file` and class-embedding norms:
 
-- One MeanFlow trained on 30 images from 10 classes (3 images/class).
-- One MeanFlow trained on 30 images from 15 classes (2 images/class).
-- Both MeanFlows use LPIPS loss and remain fixed throughout the study.
-- Approximately 2,000 real images from 200 classes are available for building
-  reference banks (about 10 images/class).
-- Training is limited to one GPU and approximately 20,000 steps, but inference
-  can be performed repeatedly in small batches.
+  | checkpoint                  | trained on                              | classes               |
+  | --------------------------- | --------------------------------------- | --------------------- |
+  | `..._30samples10classes.pt` | `train_overfit30_10classes.pt`, 3/class | 0–9                   |
+  | `..._30samples5classes.pt`  | `train_overfit30_5classes.pt`, 6/class  | 1, 3, 4, 5, 7         |
+  | `..._30samples15classes.pt` | `train_overfit30_15classes.pt`, 2/class | 15 classes (10 … 193) |
 
-## Current findings
+- 10-class backbone: its training images are files 0, 2, 4 of each class
+(pixel-matched), so `skip_first = 5`.
+- Drift/FID split per class: 5 skipped, 50 attraction images, 1,045 FID reals.
+1,000 generations/class, FID-10k.
 
-1. A MeanFlow overfit on 30 images may already behave in a mode-seeking or
-   memorizing manner, leaving little visible blur for drift to correct.
-2. LPIPS training already encourages perceptual sharpness, which further
-   reduces the expected improvement from post-processing.
-3. `drift.py` currently uses the MeanFlow training batch as the positive
-   reference bank. Training, reference, and evaluation data should be
-   disjoint.
-4. `compute_attraction()` currently compares each generated sample with every
-   supplied real sample. For class-conditional generation, positive references
-   should come from the same class:
 
-   `y_pos ~ p_data(. | class_label)`
 
-5. Drift should be computed independently for each class:
-   - attraction from same-class real references;
-   - repulsion among same-class generated samples.
-6. `drift.py` currently gives every class the same noise seed. Evaluation
-   should use multiple unique seeds per class.
-7. The current repulsion sign needs correction. `compute_repulsion()` returns
-   `y_i - weighted_neighbor`, which already points away from neighboring
-   generated samples. Subtracting that vector in `compute_sharpener_drift()`
-   moves samples toward their neighbors.
-8. The current sharpener is GMD-inspired rather than an exact implementation:
-   - it operates on flattened raw VAE latents;
-   - it uses a squared Gaussian-distance kernel;
-   - it does not use the paper's row-and-column normalization;
-   - it weights attraction and repulsion asymmetrically.
-9. The GMD paper reports that a suitable feature encoder is important because
-   raw high-dimensional distances can produce ineffective kernels.
+## Findings so far
 
-## Data protocol
 
-Only classes learned by each MeanFlow should be used in its primary
-class-conditional evaluation. Other classes can be used as a negative control.
 
-Create disjoint splits by underlying image identity:
+### 1. The earlier sweep used the wrong checkpoint
 
-### 10-class MeanFlow
+The checkpoint in the first sweeps (then named `..._30samples10classes.pt`) was
+the 5-class model. Classes 0, 2, 6, 8, 9 were never trained, so their
+generations were noise. That made the MeanFlow FID look much worse than it is
+(175.5) and made the drift look like a big win (93.1 at 10 steps): the drift
+replaced noise with near-copies of real bank images.
 
-- Training: 3 images/class (already used).
-- Reference bank: 5 different images/class.
-- Held-out evaluation: 2 different images/class.
+### 2. With the correct checkpoint, drift makes FID worse
 
-### 15-class MeanFlow
 
-- Training: 2 images/class (already used).
-- Reference bank: 6 different images/class.
-- Held-out evaluation: 2 different images/class.
+| drift steps | FID generated | FID sharpened |
+| ----------- | ------------- | ------------- |
+| 2           | 89.6          | 128.4         |
+| 10          | 89.6          | 98.2          |
 
-If the available bank includes images used during MeanFlow training, remove
-them before constructing these splits.
 
-Save reference and evaluation files with both latents and labels, for example:
+(5, 15, 20 steps pending.)
 
-```python
-{
-    "x_batch": latents,
-    "y_batch": labels,
-}
-```
+The 10-class backbone memorizes its 3 images/class, so its samples are already
+sharp near-copies of real photos. There is nothing to sharpen; the drift only
+blends them toward other images.
 
-## Generated evaluation set
+### 3. The current drift is nearest-neighbour snapping
 
-For each fixed MeanFlow:
+- Squared latent distance to the nearest attraction image: ~5,000–6,000; gap to
+the second nearest: ~180–280.
+- At tau = 0.3 → 0.08 the attraction kernel is one-hot (top weight 1.0). It only
+spreads over several images around tau ≈ 20 (top weight ≈ 0.13–0.21).
+- Each step is effectively `y ← 0.8·y + 0.2·nearest_bank_latent`; after 10
+steps a sample is ~89% one bank image. Samples of a class collapse onto a
+handful of bank images.
+- Repulsion is a no-op: with `sigma_r = 1.5`, `exp(-d²/4.5) ≈ 0`. Its sign is
+also reversed (`v = attraction - y - λ·(y - ȳ_nbr)` pulls samples together).
 
-1. Generate 20 unique seeds per class.
-2. Save the unmodified generated latents.
-3. Apply every drift configuration to the exact same generated latents.
 
-This produces:
 
-- 200 generated samples for the 10-class model;
-- 300 generated samples for the 15-class model.
+## Next experiments
 
-Using fixed generated latents makes every comparison paired and avoids
-regenerating MeanFlow outputs for each experiment.
 
-## Required implementation changes
 
-1. Add a separate reference-bank argument to `drift.py`.
-2. Load reference latents and labels independently of the generated labels.
-3. Group generated and reference latents by class.
-4. Compute attraction only against same-class references.
-5. Compute repulsion only among generated samples of the same class.
-6. Correct or redefine the repulsion sign.
-7. Support unique configurable generation seeds.
-8. Save original and sharpened latents so metrics can be recomputed without
-   rerunning generation.
-9. Log drift diagnostics:
-   - attraction norm;
-   - repulsion norm;
-   - total drift norm;
-   - relative latent displacement;
-   - nearest-reference distance;
-   - kernel-weight entropy.
+### A. Harder backbones (more images per class)
 
-Kernel entropy is important: near-zero entropy indicates one-hot nearest
-neighbor copying, while maximum entropy indicates an almost uniform,
-uninformative kernel.
+The drift can only help if the backbone's samples are novel but imperfect,
+which requires a backbone that cannot memorize its training set.
 
-## Experiment 1: Correctness and component ablation
+- Train on classes 0–9 with 10, 50, 200 images/class via
+`create_train_batch.py` on the current shards (~4 h per 20k-step run; can run
+in parallel on separate GPUs).
+- Use `skip_first` = images/class for each (files are in shard order).
+- For each: baseline FID, visual check for memorization (nearest-training
+distance), then the drift sweep.
+- Expect baseline FID to get worse (less memorization) and the drift to have
+room to help.
 
-Use the largest disjoint same-class bank and compare:
 
-1. No drift (fixed MeanFlow baseline).
-2. Current all-class attraction (negative control).
-3. Same-class attraction only.
-4. Same-class repulsion only.
-5. Same-class attraction plus corrected repulsion.
-6. Random latent perturbation matched to the full drift's average norm.
 
-This establishes whether improvements come from the intended drift structure
-rather than from arbitrary latent perturbation.
+### B. Softer kernels (raise temperature)
 
-## Experiment 2: Reference-bank size
+Raise tau so each sample is pulled toward a weighted mix of bank images rather
+than snapping onto one.
 
-With the best drift formulation from Experiment 1, compare:
+- Sweep tau ∈ {5, 10, 20, 40}; log mean top-1 kernel weight and entropy.
+Target top-1 weight ~0.1–0.5.
+- Fix the repulsion sign and set `sigma_r` near the median gen–gen distance
+(~50–80); sweep `lambda_rep` ∈ {0, 0.1, 0.5, 1}.
+- Tune step size × steps ({0.05, 0.1, 0.2} × {1, 3, 5, 10}) on a small dev set
+(e.g. 100 gens/class, different seeds), then freeze.
+- Also try `computeV()` (row/column-normalized, GMD-faithful).
 
-- 1 reference/class;
-- 2 references/class;
-- 4 references/class;
-- maximum available (5 or 6 references/class).
 
-Use nested subsets or repeat each size with several deterministic subset seeds.
-This tests whether a better empirical estimate of the real class distribution
-improves the refinement.
 
-## Experiment 3: Drift strength
+### C. Retrieval controls (run alongside A and B)
 
-Tune parameters using a small development set of 5 generated seeds/class:
+- Copy baseline: replace each generation with its nearest attraction image.
+- Random-perturbation control with the drift's per-sample norm.
+- Diagnostics: distinct bank images hit per class, distance to nearest bank
+image before vs after, relative displacement `||y_sharp - y_gen|| / ||y_gen||`.
 
-- steps: 1, 3, 5, 10;
-- step size: 0.02, 0.05, 0.1, 0.2;
-- repulsion weight: 0, 0.1, 0.5, 1.0.
+A result only counts as sharpening if it beats the copy baseline and keeps
+diversity.
 
-Do not run the full Cartesian product initially. First calibrate temperature
-from observed same-class distances, then tune step size and number of steps.
+### D. Later
 
-Freeze the selected settings before evaluating the remaining generated seeds.
+- Kernel in a perceptual feature space (DINOv2 / CLIP), update in latent space.
+- Bank size 5 → 250/class with fixed FID reals.
+- Compute-matched baselines: 2–4-step MeanFlow sampling, CFG scale sweep
+(current omega = 48 is very high).
+- Retrain the 15-class backbone on a batch from the current shards.
 
-## Temperature calibration
 
-The existing temperature schedule (`0.3` to `0.08`) should not be assumed to
-work in a 4,096-dimensional raw latent space.
-
-For each class:
-
-1. Measure generated-to-reference distances.
-2. Compute typical nearest-neighbor and median distances.
-3. Select temperatures that produce non-uniform but non-one-hot weights.
-4. Confirm this using kernel-weight entropy.
-
-Feature normalization should be applied before interpreting absolute
-temperature values.
-
-## Experiment 4: Feature-space comparison
-
-After validating the raw-latent baseline, compare:
-
-1. Raw normalized VAE-latent distance.
-2. A pretrained perceptual feature space such as DINOv2, CLIP, SimCLR, or
-   MoCo.
-3. The existing `computeV()` row-and-column normalized formulation.
-
-A practical hybrid is to use perceptual features to select and weight real
-neighbors, then apply the weighted update to their corresponding VAE latents.
-This avoids training a new feature encoder, although it remains a custom
-inference-time heuristic.
 
 ## Metrics
 
-Compute paired before/after changes for every generated seed.
+FID alone mixes quality and diversity. Report:
 
-### Image quality
+- FID-10k and KID vs held-out reals;
+- precision / recall or density / coverage;
+- within-class diversity (pairwise LPIPS or DINOv2);
+- copying: nearest-bank and nearest-training distances;
+- requested-class accuracy from a pretrained classifier;
+- per-class numbers.
 
-- CLIP-IQA or MUSIQ as the primary no-reference quality metric.
-- Laplacian variance or high-frequency energy as a diagnostic only, because
-  these metrics can reward noise and artifacts.
 
-### Conditional correctness
 
-- Requested-class top-1 accuracy.
-- Requested-class classifier confidence.
+## Code changes
 
-### Realism
+1. Command-line args for tau schedule, step size, `sigma_r`, `lambda_rep`;
+  include them in the output folder name.
+2. Fix the repulsion sign in `compute_sharpener_drift`.
+3. Log kernel top-1 weight / entropy and displacement per step.
+4. Write `results.json` per run (args, split counts, FIDs).
+5. Check the checkpoint's `args['batch_file']` against `--train-batch` and stop
+  if they differ.
+6. Remove the `['class_0000']` debug prints.
 
-- DINOv2 or Inception feature distance to held-out same-class real images.
-- Exploratory KID only if enough generated and real samples are available.
-- Do not treat FID from approximately 30 real samples as reliable.
 
-### Diversity and collapse
 
-- Pairwise DINOv2 or LPIPS distance among generated samples within each class.
-- Duplicate or near-duplicate rate.
+## Order
 
-### Content preservation and copying
-
-- LPIPS between the original and sharpened output.
-- Nearest-neighbor distance to the reference bank.
-- Nearest-neighbor distance to the MeanFlow training images.
-- Visualize each sharpened output beside its nearest reference to detect
-  reference copying.
-
-### Update magnitude
-
-- Relative latent movement:
-
-  `||y_sharp - y_base|| / ||y_base||`
-
-## Statistical analysis
-
-- Use the same base sample for every drift condition.
-- Report paired metric differences rather than only absolute values.
-- Report bootstrap 95% confidence intervals.
-- Bootstrap by class or report per-class results so one easy class does not
-  dominate the average.
-- Select hyperparameters on development seeds and report final results on
-  separate evaluation seeds.
-
-## Comparing the two MeanFlows
-
-The main cross-model hypothesis is:
-
-> The 15-class model, with fewer training images per class, may benefit more
-> from an external same-class reference bank than the 10-class model.
-
-Compare relative before/after improvements within each model. If the models use
-different classes, do not attribute absolute differences solely to the number
-of classes because class difficulty is a confound. Prefer overlapping classes
-when available.
-
-## Success criteria
-
-The sharpener is useful only if it:
-
-1. improves perceptual quality or sharpness;
-2. preserves or improves requested-class confidence;
-3. does not substantially reduce within-class diversity;
-4. does not merely copy a bank or training image;
-5. outperforms a matched random perturbation;
-6. behaves consistently across classes and seeds.
-
-If it improves sharpness but reduces diversity or copies references, report
-that as a trade-off rather than an unqualified improvement.
-
-## Recommended first run
-
-For each MeanFlow:
-
-1. Generate 20 unique seeds/class and save the base latents.
-2. Use the maximum disjoint same-class reference bank.
-3. Compare no drift, attraction-only, corrected full drift, and matched random
-   perturbation.
-4. Start with 5 drift steps and a conservatively calibrated temperature and
-   step size.
-5. Measure quality, class confidence, diversity, copying, LPIPS change, and
-   relative latent displacement.
-6. Only proceed to bank-size and broader parameter sweeps if the corrected
-   drift shows a measurable paired improvement.
+1. Start training runs for A (they take hours).
+2. Meanwhile: code changes, then B and C on the existing 10-class backbone.
+3. Run the best B settings plus C controls on each new backbone from A.
 
