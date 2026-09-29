@@ -2,156 +2,207 @@
 
 ## Goal
 
-Test whether a GMD-style inference-time drift improves one-step MeanFlow
-samples without retraining the backbone. Small-data study on 10–15 ImageNet
-classes; no full-ImageNet training or drifting.
+Test whether a GMD-style drift can sharpen one-step MeanFlow samples on
+ImageNet latents the way it does on the 2D toy (25-Gaussian grid), without
+reducing to retrieval of real images. Small-data study on 5–10 classes.
 
 ## Setup
 
 - Data: 200 ImageNet classes, up to 1,100 unique images/class
-(`/data/ali/imagenet/train`), encoded on one GPU in file order to
-`/data/ali/imf_latents/train` (217,965 latents).
-- Backbones (MeanFlow, muon + LPIPS, 20k steps), checked via their saved
-`batch_file` and class-embedding norms:
+(`/data/ali/imagenet/train`), encoded to SD-VAE latents (4×32×32) in
+`/data/ali/imf_latents/train`. All drift math happens in this latent space
+(flattened to 4,096-d); pixels are only used for plots and FID.
+- Backbones (iMF DiT-B/2, x-pred, dde, muon + LPIPS, 20k steps):
 
-  | checkpoint                  | trained on                              | classes               |
-  | --------------------------- | --------------------------------------- | --------------------- |
-  | `..._30samples10classes.pt` | `train_overfit30_10classes.pt`, 3/class | 0–9                   |
-  | `..._30samples5classes.pt`  | `train_overfit30_5classes.pt`, 6/class  | 1, 3, 4, 5, 7         |
-  | `..._30samples15classes.pt` | `train_overfit30_15classes.pt`, 2/class | 15 classes (10 … 193) |
+  | checkpoint                  | trained on                              | train files / class | `skip_first` |
+  | --------------------------- | --------------------------------------- | ------------------- | ------------ |
+  | `..._30samples10classes.pt` | `train_overfit30_10classes.pt`, 3/class | 0, 2, 4             | 5            |
+  | `..._30samples5classes.pt`  | `train_overfit30_5classes.pt`, 6/class  | 0, 2, 4, 6, 8, 10   | 11           |
+  | `..._30samples15classes.pt` | `train_overfit30_15classes.pt`, 2/class | (not checked)       | —            |
 
-- 10-class backbone: its training images are files 0, 2, 4 of each class
-(pixel-matched), so `skip_first = 5`.
-- Drift/FID split per class: 5 skipped, 50 attraction images, 1,045 FID reals.
-1,000 generations/class, FID-10k.
-
-
-
-## Findings so far
-
-
-
-### 1. The earlier sweep used the wrong checkpoint
-
-The checkpoint in the first sweeps (then named `..._30samples10classes.pt`) was
-the 5-class model. Classes 0, 2, 6, 8, 9 were never trained, so their
-generations were noise. That made the MeanFlow FID look much worse than it is
-(175.5) and made the drift look like a big win (93.1 at 10 steps): the drift
-replaced noise with near-copies of real bank images.
-
-### 2. With the correct checkpoint, drift makes FID worse
+  Train files were identified by pixel-matching decoded batch latents against
+  the raw images. They are every other file because those batches were built
+  from older shards encoded on 2 GPUs.
+- Per class: `skip_first` skipped, 50 bank (attraction) images, the rest are
+FID reals (1,039/class for the 5-class backbone → FID-5k; 1,045/class for the
+10-class backbone → FID-10k). FIDs are only comparable within a backbone.
+- `drift.py` flags: `--tau-start/--tau-end`, `--step-size`, `--lambda-rep`,
+`--sigma-r`, `--cfg-omega`, `--t-min/--t-max`, `--gen-steps`,
+`--skip-first`, batch sizes. Each run prints per-class retrieval diagnostics
+and a copy-baseline FID and writes `results.json`.
 
 
-| drift steps | FID generated | FID sharpened |
-| ----------- | ------------- | ------------- |
-| 2           | 89.6          | 128.4         |
-| 10          | 89.6          | 98.2          |
+
+## Findings
 
 
-(5, 15, 20 steps pending.)
 
-The 10-class backbone memorizes its 3 images/class, so its samples are already
-sharp near-copies of real photos. There is nothing to sharpen; the drift only
-blends them toward other images.
+### 1. Early sweeps used the wrong checkpoint
 
-### 3. The current drift is nearest-neighbour snapping
+The first sweeps loaded the 5-class model under the 10-class name. Half the
+classes were never trained, their samples were noise, and the drift "improved"
+FID (175.5 → 93.1) by replacing noise with near-copies of bank images.
 
-- Squared latent distance to the nearest attraction image: ~5,000–6,000; gap to
-the second nearest: ~180–280.
-- At tau = 0.3 → 0.08 the attraction kernel is one-hot (top weight 1.0). It only
-spreads over several images around tau ≈ 20 (top weight ≈ 0.13–0.21).
-- Each step is effectively `y ← 0.8·y + 0.2·nearest_bank_latent`; after 10
-steps a sample is ~89% one bank image. Samples of a class collapse onto a
-handful of bank images.
-- Repulsion is a no-op: with `sigma_r = 1.5`, `exp(-d²/4.5) ≈ 0`. Its sign is
-also reversed (`v = attraction - y - λ·(y - ȳ_nbr)` pulls samples together).
+### 2. The drift is nearest-neighbour retrieval
+
+- In 4,096-d latent space the attraction kernel is one-hot up to τ ≈ 10: each
+step is `y ← 0.8·y + 0.2·nearest_bank`, so drift norms shrink by exactly ×0.8
+per step and after 10 steps a sample is ~89% one bank image.
+- A generation's nearest bank image is as far away as two different real
+photos are from each other (≈70–75 vs ≈72): the "nearest real image" is a
+different photo, not a cleaner version of the generation.
+- After drifting, samples sit ≈8.5 from a bank image, and only ~10 of the 50
+bank images per class are ever used.
+- Repulsion is a no-op (`sigma_r = 1.5` → weights ≈ 0) and its sign is reversed.
 
 
+
+### 3. Temperature: retrieval or blur, no sharpening in between
+
+5-class backbone, 10 drift steps, FID-5k (generated = 122.9 at ω = 48):
+
+
+| τ schedule        | FID sharpened    | behaviour                               |
+| ----------------- | ---------------- | --------------------------------------- |
+| 0.3 → 0.08        | 92.9             | snap to nearest                         |
+| 5, 10 (constant)  | 92.7, 91.9       | snap to nearest                         |
+| 15 (constant)     | 104.1            | blend of several bank images, blur      |
+| 20 → 320          | 259 – 292        | collapse toward class mean              |
+| 5→10, 10→15, 5→20 | 92.7, 91.0, 92.5 | increasing ramps lock in the snap early |
+
+
+Higher τ doesn't select more varied bank images. It averages several of them
+into one target, which decodes to a blurry overlay. Fewer drift steps give a
+partial blend of two images (2 steps: FID 181), which is worse than no drift.
+
+### 4. On a memorizing backbone, drift hurts
+
+10-class backbone (3 images/class): generated FID 89.6; drifted 128.4 (2 steps),
+159.6 (5), 98.2 (10). Its samples are already near-copies of its training
+images, so there is nothing to sharpen.
+
+### 5. CFG: ω = 48 was out of range; ω = 1–2 and one step are best
+
+The model is trained with ω ∈ [1, 8] (`sample_cfg_scale`, `s_max = 7`).
+5-class backbone, τ = 10, interval 0.4–0.65, FID-5k:
+
+
+| ω   | steps | generated | sharpened | copy  |
+| --- | ----- | --------- | --------- | ----- |
+| 1   | 1     | 112.1     | 96.5      | 109.3 |
+| 2   | 1     | **111.5** | 96.3      | 110.8 |
+| 4   | 1     | 114.5     | 95.0      | 110.3 |
+| 8   | 1     | 130.6     | 90.6      | 105.9 |
+| 48  | 1     | 122.9     | 91.9      | 106.8 |
+| 1   | 2     | 138.5     | 109.5     | 115.4 |
+| 2   | 2     | 135.2     | 107.9     | 114.5 |
+| 4   | 2     | 138.0     | 107.7     | 114.3 |
+| 8   | 2     | 140.3     | 108.5     | 112.5 |
+| 48  | 2     | 139.4     | 105.1     | 111.6 |
+
+
+- ω = 2, 1 step improves raw MeanFlow by ~11 FID over ω = 48 at no cost. Use it
+as the baseline. (`--cfg-omega` still defaults to 48.)
+- 2-step sampling is worse at every ω and hits fewer distinct bank images.
+- ω = 8 generations sit far from all real images (nearest-bank ≈ 101 vs ≈ 72).
+
+
+
+### 6. Drift beats exact copying only through jitter
+
+Drift beats the copy baseline by 13–15 FID, but drifted samples are ~89% a bank
+image. The copy baseline repeats ~10 images/class ~100× each, which FID
+penalizes. The drift's 11% residual of the generation makes each copy slightly
+different. That is added diversity, not added quality.
+
+### 7. Why the toy worked
+
+- A toy mode is a dense cloud (~200 real points, std 0.05). With τ ≈ 0.08 the
+kernel averages many points of the same mode, so the target is the mode
+centre. ImageNet images have no near neighbours, so the local mean is one
+other photo or a blur.
+- The toy's sharpness metric (distance to mode centre) rewards within-mode
+collapse. FID does not.
+- The toy's MeanFlow generalized and blurred between modes. Ours memorizes its
+training images, so there is no blur to fix, only images to swap.
+
+**Criterion for "not retrieval":** sharpened samples stay about as far from
+the nearest bank image as raw generations (not ≈8), FID beats both the raw
+generations and the copy baseline, and diversity is unchanged.
 
 ## Next experiments
 
 
 
-### A. Harder backbones (more images per class)
+### A. Retrain a backbone that generalizes (prerequisite)
 
-The drift can only help if the backbone's samples are novel but imperfect,
-which requires a backbone that cannot memorize its training set.
+All sharpening ideas need samples that are novel but imperfect.
 
-- Train on classes 0–9 with 10, 50, 200 images/class via
-`create_train_batch.py` on the current shards (~4 h per 20k-step run; can run
-in parallel on separate GPUs).
-- Use `skip_first` = images/class for each (files are in shard order).
-- For each: baseline FID, visual check for memorization (nearest-training
-distance), then the drift sweep.
-- Expect baseline FID to get worse (less memorization) and the drift to have
-room to help.
+- Classes 0–9, 100–300 images/class (e.g. 200 → 900 left for bank + FID).
+Build the batch from the current single-GPU shards; confirm the training
+files by pixel-matching (expected `skip_first` = images/class).
+- Train longer than 20k steps; save checkpoints every ~10k.
+- Memorization check per checkpoint: nearest-training distance vs  
+training-to-training spacing.
 
 
 
-### B. Softer kernels (raise temperature)
+### B. Controls (quick, current backbone)
 
-Raise tau so each sample is pulled toward a weighted mix of bank images rather
-than snapping onto one.
-
-- Sweep tau ∈ {5, 10, 20, 40}; log mean top-1 kernel weight and entropy.
-Target top-1 weight ~0.1–0.5.
-- Fix the repulsion sign and set `sigma_r` near the median gen–gen distance
-(~50–80); sweep `lambda_rep` ∈ {0, 0.1, 0.5, 1}.
-- Tune step size × steps ({0.05, 0.1, 0.2} × {1, 3, 5, 10}) on a small dev set
-(e.g. 100 gens/class, different seeds), then freeze.
-- Also try `computeV()` (row/column-normalized, GMD-faithful).
+- Copy + random noise with the same norm as the drift's residual. If FID ≈ the
+drifted FID, the drift adds nothing but jitter.
+- Kernel-density resampling: generate extra samples, keep the ones closest to
+the bank (feature space). A no-retrieval baseline that any sharpener must beat.
 
 
 
-### C. Retrieval controls (run alongside A and B)
+### C. Inference-time sharpening that can't paste bank images
 
-- Copy baseline: replace each generation with its nearest attraction image.
-- Random-perturbation control with the drift's per-sample norm.
-- Diagnostics: distinct bank images hit per class, distance to nearest bank
-image before vs after, relative displacement `||y_sharp - y_gen|| / ||y_gen||`.
+1. **Drift at a noisy intermediate step.** Re-noise the MeanFlow output to
 
-A result only counts as sharpening if it beats the copy baseline and keeps
-diversity.
+t ≈ 0.3–0.5, drift the noisy state toward the bank noised to the same t
+(bandwidth scaled with t), then take one MeanFlow step to t = 0. Blends are
+valid inputs at high noise, and the model regenerates the detail. Baseline:
+the same re-noise + step without drift.
+2. **Drift the input noise.** Optimize ε so that `f(ε)` moves toward the bank
+(gradients through the one-step generator). Outputs are always model samples.
+3. **Feature-space gradient drift.** Kernel on DINOv2 features of decoded
+samples, gradient steps on the latent, bounded step size. Evaluate with
+Inception (a different network) to avoid gaming the metric.
 
-### D. Later
+### D. Training-time drift (the real GMD, main experiment)
 
-- Kernel in a perceptual feature space (DINOv2 / CLIP), update in latent space.
-- Bank size 5 → 250/class with fixed FID reals.
-- Compute-matched baselines: 2–4-step MeanFlow sampling, CFG scale sweep
-(current omega = 48 is very high).
-- Retrain the 15-class backbone on a batch from the current shards.
-
-
+On the backbone from A: `L = L_MF + λ·‖f(z) − sg[f(z) + V(f(z))]‖²`, with V
+computed per minibatch in a feature space, small λ, and repulsion fixed (sign,
+`sigma_r` ≈ median gen–gen distance). Averaged over batches, the model can't
+copy individual images. The toy's GMD-only learned variant collapsed, so start
+from a trained MeanFlow and increase λ slowly.
 
 ## Metrics
 
-FID alone mixes quality and diversity. Report:
-
-- FID-10k and KID vs held-out reals;
-- precision / recall or density / coverage;
-- within-class diversity (pairwise LPIPS or DINOv2);
-- copying: nearest-bank and nearest-training distances;
-- requested-class accuracy from a pretrained classifier;
-- per-class numbers.
-
+- FID and KID vs held-out reals, plus the copy-baseline FID.
+- Retrieval diagnostics: gen→bank and sharpened→bank vs bank→bank distance;
+distinct bank images hit per class; relative displacement.
+- Precision / recall or density / coverage; within-class diversity (pairwise
+LPIPS or DINOv2).
+- Nearest-training distance (memorization).
+- For the toy: add a within-mode spread metric next to sharpness.
 
 
-## Code changes
 
-1. Command-line args for tau schedule, step size, `sigma_r`, `lambda_rep`;
-  include them in the output folder name.
-2. Fix the repulsion sign in `compute_sharpener_drift`.
-3. Log kernel top-1 weight / entropy and displacement per step.
-4. Write `results.json` per run (args, split counts, FIDs).
-5. Check the checkpoint's `args['batch_file']` against `--train-batch` and stop
-  if they differ.
-6. Remove the `['class_0000']` debug prints.
+## Code to-dos
 
+1. Set the `--cfg-omega` default to 2.
+2. Fix the repulsion sign in `compute_sharpener_drift`; set `sigma_r` from data.
+3. Add the copy + noise control and the resampling baseline to `drift.py`.
+4. Check the checkpoint's saved `batch_file` against `--train-batch` and stop
 
+if they differ.
+5. Remove leftover debug prints; keep `results.json` per run.
 
 ## Order
 
-1. Start training runs for A (they take hours).
-2. Meanwhile: code changes, then B and C on the existing 10-class backbone.
-3. Run the best B settings plus C controls on each new backbone from A.
+1. Start A as soon as a GPU is free (hours).
+2. Meanwhile: B on the current backbone, and implement C1 and C2.
+3. On the new backbone: baseline (ω = 2, 1 step), B, C1–C3, then D.
 
