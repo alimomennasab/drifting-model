@@ -63,7 +63,9 @@ class iMeanFlow(nn.Module):
         eval_mode: bool = False,
         # Add perceptual loss (LPIPS) to the current loss term loss_u + loss_v
         p_loss: bool = False,
-        perceptual_metric: str = "lpips" # lpips, euclidean
+        perceptual_metric: str = "lpips", # lpips, euclidean
+        # Compute the perceptual loss on a random subset of this many samples per batch (None = all).
+        p_loss_samples: int = None,
     ):
         super().__init__()
         self.model_str = model_str
@@ -90,6 +92,7 @@ class iMeanFlow(nn.Module):
 
         self.p_loss = p_loss
         self.perceptual_metric = perceptual_metric
+        self.p_loss_samples = p_loss_samples
         if self.p_loss: 
             assert perceptual_metric in ("lpips", "eucl")
             print("using p_loss with metric ", self.perceptual_metric)
@@ -136,7 +139,7 @@ class iMeanFlow(nn.Module):
 
         data_size = int(bz * self.data_proportion)
         fm_mask = (torch.arange(bz, device=device) < data_size).reshape(bz, 1, 1, 1)
-        r = torch.where(fm_mask, t, r)
+        r = torch.where(fm_mask, t, r) # set all r values in mask to = t
         return t, r, fm_mask
 
     def sample_cfg_scale(self, bz, device, s_max=7.0):
@@ -353,8 +356,14 @@ class iMeanFlow(nn.Module):
             # x_pred = z_t - t_safe * u
 
             x_pred = z_t - t_safe * u_live
+            x_target = x
+            if self.p_loss_samples is not None and self.p_loss_samples < bz:
+                # select random subset of batch to compute perceptual loss with
+                p_idx = torch.randperm(bz, device=device)[: self.p_loss_samples]
+                x_pred, x_target = x_pred[p_idx], x_target[p_idx]
             decoded_x_pred = self.vae.decode(x_pred)
-            decoded_x = self.vae.decode(x)
+            with torch.no_grad():
+                decoded_x = self.vae.decode(x_target)
 
             if self.perceptual_metric == "lpips":
                 loss_perceptual = self.perceptual_net(decoded_x_pred, decoded_x)
@@ -373,7 +382,10 @@ class iMeanFlow(nn.Module):
                 # each layer loss value is of shape [B]
                 loss_perceptual = torch.stack(layer_losses).mean(dim=0)
 
-        loss = (loss_u_w + loss_v_w + loss_perceptual).mean() # avg across each sample in batch
+        # avg across each sample in batch (perceptual term averaged over its own subset)
+        loss = (loss_u_w + loss_v_w).mean()
+        if self.p_loss:
+            loss = loss + loss_perceptual.mean()
 
         with torch.no_grad():
             loss_u_raw = ((V - v_g) ** 2).mean()
