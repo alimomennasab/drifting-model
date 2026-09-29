@@ -8,9 +8,6 @@ Usage:
     CUDA_VISIBLE_DEVICES=2 python overfit_test.py --derivative dde
     CUDA_VISIBLE_DEVICES=2 python overfit_test.py --derivative jvp
 
-    CUDA_VISIBLE_DEVICES=5 python overfit_test.py --derivative dde \\
-        --experiment-name x_pred_lpips_ploss --p-loss --p-metric lpips
-
     CUDA_VISIBLE_DEVICES=7 python overfit_test.py --derivative dde \\
         --experiment-name x_pred_lpips_ploss \\
         --p-loss \\
@@ -105,6 +102,9 @@ def main():
     p.add_argument("--experiment-name", type=str)
     p.add_argument("--p-loss", action="store_true", help="Use p_loss to run with perceptual loss.")
     p.add_argument("--p-metric", type=str, choices=["lpips", "eucl"])
+    p.add_argument("--batch-size", type=int, default=None, help="Random minibatch size per step. Default: train on the whole (tiled) batch file every step")
+    p.add_argument("--save-every", type=int, default=0, help="Also save a checkpoint every N steps (0 = only at the end)")
+    p.add_argument("--p-loss-samples", type=int, default=None, help="Compute the perceptual loss on a random subset of this many samples per step (default: whole batch)")
 
     args = p.parse_args()
     # Fixed optimizer defaults expected by utils.optimizer.build_optimizers.
@@ -145,22 +145,50 @@ def main():
         p_loss=args.p_loss,
         parametrization="xpred",
         perceptual_metric=args.p_metric,
+        p_loss_samples=args.p_loss_samples,
     ).to(device)
     optimizers, optimizer_summary = build_optimizers(model, args)
     print(f"Optimizer: {optimizer_summary}")
 
     amp_dtype = torch.bfloat16 if args.amp == "bf16" else None
 
+    def checkpoint_path_at(step):
+        return os.path.join(
+            args.out,
+            f"overfit_{args.derivative}_{args.experiment_name}_{args.optimizer}_"
+            f"{step}steps_{n_samples}samples{n_classes}classes.pt",
+        )
+
+    def save_checkpoint(step):
+        os.makedirs(args.out, exist_ok=True)
+        path = checkpoint_path_at(step)
+        torch.save(
+            {
+                "model": model.state_dict(),
+                "optimizer": optimizer_state_dict(optimizers),
+                "step": step,
+                "args": vars(args),
+            },
+            path,
+        )
+        print(f"Saved model checkpoint to {path}", flush=True)
+        return path
+
     print(f"Starting {args.steps}-step overfit run with derivative={args.derivative}")
     t0 = time.time()
     log_lines = []
     for step in range(1, args.steps + 1):
         zero_grad_optimizers(optimizers)
+        if args.batch_size is not None:
+            idx = torch.randint(0, n_samples, (args.batch_size,), device=device)
+            x_step, y_step = x_batch[idx], y_batch[idx]
+        else:
+            x_step, y_step = x_tile, y_tile
         if amp_dtype is not None:
             with torch.amp.autocast(device_type="cuda", dtype=amp_dtype):
-                loss, logs = model(x_tile, y_tile)
+                loss, logs = model(x_step, y_step)
         else:
-            loss, logs = model(x_tile, y_tile)
+            loss, logs = model(x_step, y_step)
         loss.backward()
         step_optimizers(optimizers, scaler=None)
 
@@ -176,6 +204,9 @@ def main():
             print(msg, flush=True)
             log_lines.append(msg)
 
+        if args.save_every and step % args.save_every == 0 and step != args.steps:
+            save_checkpoint(step)
+
     os.makedirs(args.out, exist_ok=True)
     log_path = os.path.join(args.out, "overfit.log")
     with open(log_path, "a") as f:
@@ -188,22 +219,7 @@ def main():
         )
         f.write("\n".join(log_lines) + "\n")
 
-    checkpoint_path = os.path.join(
-        args.out,
-        f"overfit_{args.derivative}_{args.experiment_name}_{args.optimizer}_"
-        f"{args.steps}steps_{n_samples}samples{n_classes}classes.pt",
-    )
-
-    torch.save(
-        {
-            "model": model.state_dict(),
-            "optimizer": optimizer_state_dict(optimizers),
-            "step": args.steps,
-            "args": vars(args),
-        },
-        checkpoint_path,
-    )
-    print(f"Saved model checkpoint to {checkpoint_path}")
+    checkpoint_path = save_checkpoint(args.steps)
     plot_path = plot_losses(log_lines, checkpoint_path, args.p_metric)
     print(f"Saved loss plot to {plot_path}")
 
