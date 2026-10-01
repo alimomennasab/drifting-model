@@ -441,3 +441,21 @@ class iMeanFlow(nn.Module):
             z_t = z_t - (t_b - r_b)[:, None, None, None] * u
 
         return z_t
+
+    @torch.no_grad()
+    def mf_step(self, z_t, t, r, omega, t_min, t_max, labels):
+        """Perform a single meanflow step from t to r on z_t"""
+        bsz = z_t.shape[0]
+        device, dtype = z_t.device, z_t.dtype
+
+        t_b = torch.as_tensor(t, dtype=dtype, device=device).expand(bsz)
+        r_b = torch.as_tensor(r, dtype=dtype, device=device).expand(bsz)
+        omega_b = torch.as_tensor(omega, dtype=dtype, device=device).expand(bsz)
+        t_min_b = torch.as_tensor(t_min, dtype=dtype, device=device).expand(bsz)
+        t_max_b = torch.as_tensor(t_max, dtype=dtype, device=device).expand(bsz)
+
+        u = self.u_fn(z_t, t_b, t_b - r_b, omega_b, t_min_b, t_max_b, y=labels)[0]
+        z_t = z_t - (t_b - r_b)[:, None, None, None] * u
+
+        return z_t
+   
