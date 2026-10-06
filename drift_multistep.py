@@ -8,15 +8,14 @@ denoise.
 export INCEPTION_WEIGHTS=/data/ali/weights/weights-inception-2015-12-05-6726825d.pth
 
     CUDA_VISIBLE_DEVICES=6 python -u drift_multistep.py \
-    --data-root "/data/ali/imf_latents/train" \
-    --drift-steps 2 \
+    --data-root "/data/ali/imagenet/validation" \
+    --drift-steps 1 \
     --train-batch "/data/ali/imf_latents/train_overfit1000_10classes.pt" \
     --checkpoint-path "/data/ali/imf_runs/overfit_dde_x_pred_lpips_ploss_muon_30000steps_1000samples10classes.pt" \
     --num-y 1000 \
     --num-y-pos 50 \
-    --skip-first 100 \
     --mid-t 0.5 \
-    > drift_multistep2.log 2>&1
+    > drift_multistep_1steps.log 2>&1
 
 """
 
@@ -34,7 +33,7 @@ from utils.plot import plot_class_rows
 from utils.fid import (
     get_inception_model,
     extract_inception_features,
-    compute_fid_between_features,
+    compute_fid_from_features,
 )
 
 
@@ -76,12 +75,11 @@ def main():
     p.add_argument("--train-batch", type=str, required=True)
     p.add_argument("--checkpoint-path", type=str, required=True)
     p.add_argument("--num-y", type=int, required=True, help="Amount of generations produced **PER CLASS**")
-    p.add_argument("--num-y-pos", type=int, required=True, help="Amount of real images in positive image bank **PER CLASS**")
+    p.add_argument("--num-y-pos", type=int, required=True, help="Val images per class in the drift bank")
     p.add_argument("--out-dir", type=str, default="/data/ali/gmd_gens/")
     p.add_argument("--decode-batch-size", type=int, default=8)
     p.add_argument("--gen-batch-size", type=int, default=64)
     p.add_argument("--plot-max", type=int, default=8, help="Max images per row in class PNGs")
-    p.add_argument("--skip-first", type=int, default=5, help="My train images are the first few images of the dataset, so skip these to ensure no leakage into the drift/fid bank")
     p.add_argument("--tau-start", type=float, default=5.0)
     p.add_argument("--tau-end", type=float, default=15.0)
     p.add_argument("--step-size", type=float, default=0.2)
@@ -91,7 +89,12 @@ def main():
     p.add_argument("--t-min", type=float, default=0.4, help="CFG interval start")
     p.add_argument("--t-max", type=float, default=0.65, help="CFG interval end")
     p.add_argument("--mid-t", type=float, default=0.5, help="Time to pause for drift (1=noise, 0=clean)")
-    p.add_argument("--fid", action='store_true')
+    p.add_argument("--fid", action="store_true", help="FID on ADM ImageNet-256 train stats")
+    p.add_argument(
+        "--fid-statistics-file",
+        type=str,
+        default="/home/ali/unite-meanflow/drifting-model/MeanFlow/fid_stats/adm_in256_stats.npz",
+    )
     args = p.parse_args()
 
     # load meanflow model alongside VAE decoder & feature extractor
@@ -127,20 +130,15 @@ def main():
     interval_max = args.t_max
     mid_t = args.mid_t
     n_samples = len(unique_labels) * k
-    skip_first = args.skip_first
     gen_batch_size = args.gen_batch_size
 
     # create seeds and labels
     seeds = torch.arange(k).repeat(len(unique_labels)) # [0,1,2,3,4, 0,1,2,3,4, ...]
     gen_labels = unique_labels.repeat_interleave(k) # [c0,c0,c0,c0,c0, c1,c1,..., c10,...]
 
-    # load positive image bank for drift computation
-    y_pos_img_bank_dict = create_positive_bank(args.data_root, unique_labels.tolist(), skip_first)
-    print(y_pos_img_bank_dict.keys())
-    print(next(iter(y_pos_img_bank_dict.values())).shape)
-    # only compute drift with the first k_pos images per class
-    # the remaining images in the bank are used later for fid computation
-    y_pos_for_drift = {key: latents[:k_pos] for key, latents in y_pos_img_bank_dict.items()}
+    y_pos_for_drift = create_positive_bank(
+        args.data_root, unique_labels.tolist(), max_per_class=k_pos
+    )
     print(y_pos_for_drift.keys())
     print(next(iter(y_pos_for_drift.values())).shape)
 
@@ -253,7 +251,7 @@ def main():
         vae, generated_latents, device, batch_size=args.decode_batch_size
     )
 
-    print("Decoding drift-sharpend two-step images")
+    print("Decoding drift-sharpened two-step images")
     sharpened_images = decode_latents(
         vae, sharpened_latents, device, batch_size=args.decode_batch_size
     )
@@ -297,41 +295,26 @@ def main():
     with open(results_path, "w") as f:
         json.dump(results, f, indent=2)
 
-    # compute FID for 2-step gens & mid-run-sharpened vs leftover bank
     if args.fid:
-        fid_latents = torch.cat(
-            [y_pos_img_bank_dict[f"class_{c:04d}"][k_pos:] for c in unique_labels.tolist()],
-            dim=0,
-        )
-        if fid_latents.shape[0] == 0:
-            raise ValueError("No leftover bank images for FID; need bank size > k_pos per class")
-
-        real_images = decode_latents(
-            vae, fid_latents, device, batch_size=args.decode_batch_size
-        )
-
         inception_model = get_inception_model(device)
-        # normalize & clamp: fid expects [0, 1] values
-        real = ((real_images + 1) / 2).clamp(0, 1)
         onestep = ((onestep_images + 1) / 2).clamp(0, 1)
         gen = ((generated_images + 1) / 2).clamp(0, 1)
         sharp = ((sharpened_images + 1) / 2).clamp(0, 1)
-
-        feat_real, _ = extract_inception_features(real, inception_model, batch_size=16)
         feat_onestep, _ = extract_inception_features(onestep, inception_model, batch_size=16)
         feat_gen, _ = extract_inception_features(gen, inception_model, batch_size=16)
         feat_sharp, _ = extract_inception_features(sharp, inception_model, batch_size=16)
-
-        fid_onestep = compute_fid_between_features(feat_onestep, feat_real)
-        fid_gen = compute_fid_between_features(feat_gen, feat_real)
-        fid_sharp = compute_fid_between_features(feat_sharp, feat_real)
-        print(f"FID 1-STEP GENERATED: {fid_onestep:.4f}")
-        print(f"FID 2-STEP UNSHARPENED: {fid_gen:.4f}")
-        print(f"FID 2-STEP SHARPENED: {fid_sharp:.4f}")
+        stats = args.fid_statistics_file
+        fid_onestep = compute_fid_from_features(feat_onestep, stats)
+        fid_gen = compute_fid_from_features(feat_gen, stats)
+        fid_sharp = compute_fid_from_features(feat_sharp, stats)
+        print(f"FID 1-STEP GENERATED (ADM): {fid_onestep:.4f}")
+        print(f"FID 2-STEP UNSHARPENED (ADM): {fid_gen:.4f}")
+        print(f"FID 2-STEP SHARPENED (ADM): {fid_sharp:.4f}")
         results["fid"] = {
             "onestep": fid_onestep,
             "generated": fid_gen,
             "sharpened": fid_sharp,
+            "fid_statistics_file": stats,
         }
 
     with open(results_path, "w") as f:
