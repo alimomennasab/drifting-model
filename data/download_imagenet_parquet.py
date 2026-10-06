@@ -8,7 +8,8 @@ are numbered 0000000.jpg, 0000001.jpg, ... exactly like download_imagenet.py.
 The validation split has only 50 images per class, so all of them are kept.
 
 Safe to interrupt and rerun: finished parquet files are listed in
-<STAGING_ROOT>/<split>/done.txt and skipped.
+<STAGING_ROOT>/<split>/done.txt and skipped. On success that staging split
+directory is removed.
 
     python download_imagenet_parquet.py --split train
     python download_imagenet_parquet.py --split validation
@@ -16,6 +17,7 @@ Safe to interrupt and rerun: finished parquet files are listed in
 
 import argparse
 import os
+import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -106,6 +108,7 @@ def main():
             done_file.flush()
 
     finalize(staging, out_dir)
+    shutil.rmtree(staging)
     print("Done.")
 
 
