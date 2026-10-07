@@ -58,21 +58,13 @@ def plot_image_triplets(
     return output_path
 
 
-def plot_class_comparison(
-    drift_steps: int,
-    size_pos_bank: int,
-    positive_images: torch.Tensor,
-    generated_images: torch.Tensor,
-    sharpened_images: torch.Tensor,
+def plot_class_rows(
+    rows: list[tuple[str, torch.Tensor]],
     output_path: str | Path,
     class_id: int | None = None,
+    subtitle: str | None = None,
 ) -> Path:
-    """Plot one class as three rows: positive image bank, generated, sharpened."""
-    rows = (
-        ("Positive image bank", positive_images),
-        ("Generated", generated_images),
-        ("Sharpened", sharpened_images),
-    )
+    """Plot one class as labeled rows of images."""
     for title, images in rows:
         if images.ndim != 4:
             raise ValueError(f"{title} images must have shape [B, C, H, W].")
@@ -84,7 +76,7 @@ def plot_class_comparison(
     grid = fig.add_gridspec(
         n_rows,
         max_n + 1,
-        width_ratios=[0.55] + [1.0] * max_n,
+        width_ratios=[0.9] + [1.0] * max_n,
         wspace=0.05,
         hspace=0.12,
     )
@@ -110,11 +102,38 @@ def plot_class_comparison(
                 cmap = "gray" if images[col].ndim == 2 else None
                 ax.imshow(images[col], cmap=cmap)
 
+    title_parts = []
     if class_id is not None:
-        fig.suptitle(f"Class {class_id} | {drift_steps} Drift Steps | {size_pos_bank} positive images", fontsize=12, y=0.98)
+        title_parts.append(f"Class {class_id}")
+    if subtitle:
+        title_parts.append(subtitle)
+    if title_parts:
+        fig.suptitle(" | ".join(title_parts), fontsize=12, y=0.98)
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return output_path
+
+
+def plot_class_comparison(
+    drift_steps: int,
+    size_pos_bank: int,
+    positive_images: torch.Tensor,
+    generated_images: torch.Tensor,
+    sharpened_images: torch.Tensor,
+    output_path: str | Path,
+    class_id: int | None = None,
+) -> Path:
+    """Plot one class as three rows: positive image bank, generated, sharpened."""
+    return plot_class_rows(
+        [
+            ("Positive image bank", positive_images),
+            ("Generated", generated_images),
+            ("Sharpened", sharpened_images),
+        ],
+        output_path,
+        class_id=class_id,
+        subtitle=f"{drift_steps} Drift Steps | {size_pos_bank} positive images",
+    )
