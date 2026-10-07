@@ -13,7 +13,9 @@ Run:
 
   CUDA_VISIBLE_DEVICES=6 python prepare_latents.py \
   --imagenet-root /data/ali/imagenet \
-  --output-dir /data/ali/imf_latents_imagenet
+  --output-dir /data/ali/imf_latents_imagenet \
+  --batch-size 16 \
+  --split val
 """
 
 import argparse
@@ -124,12 +126,13 @@ def main():
     p.add_argument("--num-workers", type=int, default=8)
     p.add_argument("--shard-size", type=int, default=2048,
                    help="Number of samples per output shard.")
+    p.add_argument("--split", type=str, required=True, help="train or val")
     args = p.parse_args()
 
     rank, world, local_rank = init_dist()
     device = torch.device("cuda", local_rank)
 
-    out_train = os.path.join(args.output_dir, "train")
+    out_train = os.path.join(args.output_dir, args.split)
     if rank == 0:
         os.makedirs(out_train, exist_ok=True)
     if world > 1:
@@ -141,7 +144,7 @@ def main():
         transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
     ])
     ds = datasets.ImageFolder(
-        os.path.join(args.imagenet_root, "train"),
+        os.path.join(args.imagenet_root, args.split),
         transform=transform,
         loader=pil_loader,
     )
@@ -183,10 +186,6 @@ def main():
     if hasattr(vae, "decoder"):
         del vae.decoder
 
-    shard_imgs = []
-    shard_labels = []
-    shard_idx = 0
-    total_written = 0
     newly_processed = 0
     pbar = tqdm(loader, disable=rank != 0)
     with torch.no_grad():
