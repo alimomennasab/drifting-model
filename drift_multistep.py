@@ -8,14 +8,14 @@ denoise.
 export INCEPTION_WEIGHTS=/data/ali/weights/weights-inception-2015-12-05-6726825d.pth
 
     CUDA_VISIBLE_DEVICES=6 python -u drift_multistep.py \
-    --data-root "/data/ali/imagenet/validation" \
+    --data-root "/data/ali/imf_latents/val" \
     --drift-steps 1 \
     --train-batch "/data/ali/imf_latents/train_overfit1000_10classes.pt" \
     --checkpoint-path "/data/ali/imf_runs/overfit_dde_x_pred_lpips_ploss_muon_30000steps_1000samples10classes.pt" \
     --num-y 1000 \
     --num-y-pos 50 \
     --mid-t 0.5 \
-    > drift_multistep_1steps.log 2>&1
+    > drift_multistep_large.log 2>&1
 
 """
 
@@ -71,7 +71,7 @@ def mf_step_chunks(mf, z, t, r, omega, t_min, t_max, labels, batch_size, device)
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--drift-steps", type=int, default=10)
-    p.add_argument("--data-root", type=str, required=True)
+    p.add_argument("--data-root", type=str, default="/data/ali/imf_latents/val", help="Cached val latent shards")
     p.add_argument("--train-batch", type=str, required=True)
     p.add_argument("--checkpoint-path", type=str, required=True)
     p.add_argument("--num-y", type=int, required=True, help="Amount of generations produced **PER CLASS**")

@@ -8,9 +8,8 @@ from utils.drift_util import create_positive_bank
 from utils.vae_util import VAEWrapper
 
 
-DATA_ROOT = "/data/ali/imf_latents/train"
+DATA_ROOT = "/data/ali/imf_latents/val"
 TRAIN_BATCH = "/data/ali/imf_latents/train_overfit1000_10classes.pt"
-SKIP_FIRST = 100
 K_POS = 50
 OUT_DIR = "/data/ali/gmd_gens/pos_bank_50_per_class"
 DECODE_BATCH = 8
@@ -19,7 +18,7 @@ DECODE_BATCH = 8
 def main():
     ds = torch.load(TRAIN_BATCH, map_location="cpu")
     class_ids = ds["y_batch"].unique(sorted=True).tolist()
-    bank = create_positive_bank(DATA_ROOT, class_ids, SKIP_FIRST)
+    bank = create_positive_bank(DATA_ROOT, class_ids)
     vae = VAEWrapper(decode_batch_size=DECODE_BATCH)
     device = next(vae.vae.parameters()).device
     os.makedirs(OUT_DIR, exist_ok=True)
