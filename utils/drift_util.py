@@ -8,53 +8,93 @@ from data.latent_dataset import VAE_MEAN, VAE_STD
 from utils.vae_util import VAEWrapper
 
 
+VAL_LATENT_ROOT = "/data/ali/imf_latents/val"
+ZHUYU_LATENT_SCALE = 0.18125 # zhuyu MeanFlow scales latents by 0.18125 
 
-# --------------------- DRIFT BANK HELPERS ---------------------
-def create_positive_bank(data_root, class_ids, skip_first, max_per_class=None):
-    """Build a held-out positive bank from the latent shards.
 
-    Walks the shards in order and, for each class, skips the first `skip_first`
-    samples (the ones create_train_batch.py takes for training) and keeps the
-    rest, up to `max_per_class` samples. 
+def _shard_paths(data_root):
+    paths = sorted(glob.glob(os.path.join(data_root, "shard_*.pt")))
+    if not paths:
+        raise FileNotFoundError(
+            f"No shard_*.pt under {data_root}. Cache val latents there "
+            f"(same dict as train: images [N,8,32,32] mean||std, labels [N])."
+        )
+    return paths
+
+
+def class_ids_from_val_root(data_root=VAL_LATENT_ROOT):
+    """Sorted class ids present in cached val shards."""
+    ids = set()
+    for path in _shard_paths(data_root):
+        shard = torch.load(path, map_location="cpu", weights_only=False)
+        ids.update(int(c) for c in shard["labels"].unique().tolist())
+    if not ids:
+        raise RuntimeError(f"No labels in shards under {data_root}")
+    return sorted(ids)
+
+
+def _moments_to_model_latents(mean, latent_norm):
+    """[N,4,H,W] VAE mean -> model-space latents."""
+    if latent_norm == "zhuyu":
+        return mean * ZHUYU_LATENT_SCALE
+    mean_ = VAE_MEAN.view(1, -1, 1, 1)
+    std_ = VAE_STD.view(1, -1, 1, 1)
+    return (mean - mean_) / std_
+
+
+def create_positive_bank(
+    data_root=VAL_LATENT_ROOT,
+    class_ids=None,
+    max_per_class=None,
+    latent_norm="imf",
+):
+    """Load a positive bank from cached val latent shards.
+
+    Expects ``data_root/shard_*.pt`` like ``imf_latents/train``:
+    ``images`` (N, 8, 32, 32) mean||std and ``labels`` (N,).
+    Default root is ``/data/ali/imf_latents/val``. No VAE encode.
+
+    ``latent_norm="imf"``: (mean - μ) / σ (iMF / VAEWrapper).
+    ``latent_norm="zhuyu"``: mean * 0.18125 (official MeanFlow).
 
     Returns {"class_XXXX": [N, 4, H, W]}.
     """
+    if class_ids is None:
+        class_ids = class_ids_from_val_root(data_root)
     class_ids = sorted(int(c) for c in class_ids)
-    seen = {c: 0 for c in class_ids}
     buckets = {c: [] for c in class_ids}
     kept = {c: 0 for c in class_ids}
-    mean_ = VAE_MEAN.view(1, -1, 1, 1)
-    std_ = VAE_STD.view(1, -1, 1, 1)
 
-    for path in sorted(glob.glob(os.path.join(data_root, "shard_*.pt"))):
+    for path in _shard_paths(data_root):
         shard = torch.load(path, map_location="cpu", weights_only=False)
         labels = shard["labels"]
+        images = shard["images"].float()
         for c in class_ids:
+            if max_per_class is not None and kept[c] >= max_per_class:
+                continue
             idx = (labels == c).nonzero().squeeze(1)
             if len(idx) == 0:
                 continue
-            # skip this class's first `skip_first` amount of samples in this shard
-            start = max(skip_first - seen[c], 0)
-            seen[c] += len(idx)
-            idx = idx[start:]
             if max_per_class is not None:
                 idx = idx[: max_per_class - kept[c]]
-            if len(idx) == 0:
-                continue
-            mean, _ = shard["images"][idx].float().chunk(2, dim=1)
-            buckets[c].append((mean - mean_) / std_)
+            mean = images[idx]
+            if mean.shape[1] == 8:
+                mean, _ = mean.chunk(2, dim=1)
+            elif mean.shape[1] != 4:
+                raise RuntimeError(
+                    f"{path}: expected 4 or 8 image channels, got {tuple(mean.shape)}"
+                )
+            buckets[c].append(_moments_to_model_latents(mean, latent_norm))
             kept[c] += len(idx)
-
         if max_per_class is not None and all(kept[c] >= max_per_class for c in class_ids):
             break
 
     bank = {}
     for c in class_ids:
         if not buckets[c]:
-            raise RuntimeError(
-                f"No held-out samples for class {c} after skip_first={skip_first}"
-            )
-        bank[f"class_{c:04d}"] = torch.cat(buckets[c])
+            raise RuntimeError(f"No val latents for class {c} under {data_root}")
+        bank[f"class_{c:04d}"] = torch.cat(buckets[c], dim=0)
+        print(f"val bank class_{c:04d}: {bank[f'class_{c:04d}'].shape[0]} images")
     return bank
 
 
