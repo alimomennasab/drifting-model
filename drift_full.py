@@ -57,8 +57,8 @@ def main():
     p.add_argument("--tau-start", type=float, default=5.0)
     p.add_argument("--tau-end", type=float, default=15.0)
     p.add_argument("--step-size", type=float, default=0.2)
-    p.add_argument("--lambda-rep", type=float, default=0.1)
-    p.add_argument("--sigma-r", type=float, default=1.5)
+    p.add_argument("--lambda-rep", type=float, default=0.1, help="repulsion strength")
+    p.add_argument("--sigma-r", type=float, default=1.5, help="repulsion kernel bandwidth")
     p.add_argument("--cfg-scale", type=float, default=1.0, help="Must stay 1.0 for the CFG-trained zhuyu checkpoint")
     p.add_argument("--gen-steps", type=int, default=1, help="MeanFlow sampling steps")
     p.add_argument("--fid", action="store_true", help="FID from ADM ImageNet-256 train stats")
@@ -192,7 +192,8 @@ def main():
     run_dir = os.path.join(
         args.out_dir,
         f"gmd_gens_zhuyu_{ckpt_name}_{len(unique_labels)}classes_{k}gens_{steps}steps"
-        f"_tau{args.tau_start:g}-{args.tau_end:g}_ss{step_size:g}_cfg{cfg_scale:g}_gen{args.gen_steps}",
+        f"_tau{args.tau_start:g}-{args.tau_end:g}_ss{step_size:g}_lrep{lambda_rep:g}_sr{sigma_r:g}"
+        f"_cfg{cfg_scale:g}_gen{args.gen_steps}",
     )
     os.makedirs(run_dir, exist_ok=True)
     print(f"Writing class plots to {run_dir}")
