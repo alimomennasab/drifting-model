@@ -80,6 +80,7 @@ def main():
     p.add_argument("--decode-batch-size", type=int, default=8)
     p.add_argument("--gen-batch-size", type=int, default=64)
     p.add_argument("--plot-max", type=int, default=8, help="Max images per row in class PNGs")
+    p.add_argument("--saved-png-num", type=int, default=10, help="Save class PNGs for the first N classes only")
     p.add_argument("--tau-start", type=float, default=5.0)
     p.add_argument("--tau-end", type=float, default=15.0)
     p.add_argument("--step-size", type=float, default=0.2)
@@ -267,7 +268,7 @@ def main():
     print(f"Writing class plots to {run_dir}")
 
     plot_n = min(args.plot_max, k)
-    for class_id in unique_labels.tolist():
+    for class_id in unique_labels.tolist()[: args.saved_png_num]:
         key = f"class_{class_id:04d}"
         mask = gen_labels == class_id
 
