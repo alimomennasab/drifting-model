@@ -5,11 +5,32 @@ import matplotlib.pyplot as plt
 import torch
 
 from data.latent_dataset import VAE_MEAN, VAE_STD
+from models.latent_mae import MAEResNet, load_mae_from_jax
 from utils.vae_util import VAEWrapper
 
 
 VAL_LATENT_ROOT = "/data/ali/imf_latents/val"
 ZHUYU_LATENT_SCALE = 0.18125 # zhuyu MeanFlow scales latents by 0.18125 
+MAE_WEIGHTS_ROOT = "/data/ali/weights/drifting_mae"
+
+
+def load_feature_extractor(
+    name="mae_latent_640",
+    weights_root=MAE_WEIGHTS_ROOT,
+    device="cuda",
+    dtype=torch.float32,
+) -> MAEResNet:
+    """Frozen latent MAE encoder
+    name: mae_latent_640 or mae_latent_256.
+
+    Passed latents should be scaled with VAE sample * MAE_LATENT_SCALE.
+    """
+    model, metadata = load_mae_from_jax(os.path.join(weights_root, name), with_decoder=False)
+    model = model.to(device=device, dtype=dtype).eval()
+    model.requires_grad_(False)
+    print(f"Loaded {metadata['model_id']} (step {metadata['source']['step_loaded']}) from {weights_root}")
+    
+    return model
 
 
 def _shard_paths(data_root):
@@ -40,6 +61,7 @@ def _moments_to_model_latents(mean, latent_norm):
     mean_ = VAE_MEAN.view(1, -1, 1, 1)
     std_ = VAE_STD.view(1, -1, 1, 1)
     return (mean - mean_) / std_
+
 
 
 def create_positive_bank(
@@ -182,7 +204,9 @@ def compute_sharpener_drift(
 
     attraction = compute_attraction(y, real_data, tau)
     repulsion = compute_repulsion(y, sigma_r)
-    v = (attraction - y) - lambda_rep * repulsion
+    # if we have a minus (-), the repulsion would end up being -y + y_neighbors
+    # this would likely change the sign of the repulsion, which would cause it to be attraction instead
+    v = (attraction - y) + lambda_rep * repulsion
     return v
 
 
