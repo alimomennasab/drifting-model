@@ -9,13 +9,14 @@ the drift into the y tensor rather than directly updating it
 export INCEPTION_WEIGHTS=/data/ali/weights/weights-inception-2015-12-05-6726825d.pth
 
     CUDA_VISIBLE_DEVICES=2 nohup python -u drift_full_feature.py \
-    --class-ids 0,1,2,3,4,5,6,7,8,9 \
-    --drift-steps 2 \
+    --drift-steps 5 \
+    --step-size 4 \
     --num-y 50 \
     --num-y-pos 50 \
-    --gen-batch-size 128 \
-    --decode-batch-size 64 \
-    > drift_full_feature2_.log 2>&1 &
+    --gen-batch-size 256 \
+    --decode-batch-size 128 \
+    --fid \
+    > drift_full_feature_fid.log 2>&1 &
 """
 
 import argparse
@@ -47,6 +48,10 @@ from utils.fid import (
     extract_inception_features,
     compute_fid_from_features,
 )
+
+# Measured unsharpened FID
+# obtained with setup: 1000 classes x 50 gens, seeds 0..49, --gen-steps 1, --cfg-scale 1
+ONESTEP_FID_BASELINE = 6.17
 
 
 def main():
@@ -241,9 +246,8 @@ def main():
     del mae 
     torch.cuda.empty_cache()
 
-    generated_images = decode_latents(vae, generated_latents, device, args.decode_batch_size)
     sharpened_images = decode_latents(vae, sharpened_latents, device, args.decode_batch_size)
-    del generated_latents, sharpened_latents
+    del sharpened_latents
     torch.cuda.empty_cache()
 
     ckpt_name = os.path.basename(args.checkpoint_path).replace(".pt", "")
@@ -264,11 +268,16 @@ def main():
         positive_images = decode_latents(
             vae, y_pos_for_drift[key][:plot_n], device, args.decode_batch_size
         )
+
+        # decode only images we plot instead of entire generated batch
+        generated_images = decode_latents(
+            vae, generated_latents[mask.to(device)][:plot_n], device, args.decode_batch_size
+        )
         plot_path = plot_class_comparison(
             steps,
             k_pos,
             positive_images[:plot_n],
-            generated_images[mask][:plot_n],
+            generated_images,
             sharpened_images[mask][:plot_n],
             os.path.join(run_dir, f"{key}.png"),
             class_id=class_id,
@@ -283,18 +292,14 @@ def main():
     if args.fid:
         inception_model = get_inception_model(device)
         # normalize & clamp: fid expects [0, 1] values
-        gen = ((generated_images + 1) / 2).clamp(0, 1)
         sharp = ((sharpened_images + 1) / 2).clamp(0, 1)
-        feat_gen, _ = extract_inception_features(gen, inception_model, batch_size=16)
         feat_sharp, _ = extract_inception_features(sharp, inception_model, batch_size=16)
-        del gen, sharp
+        del sharp
         stats = args.fid_statistics_file
-        fid_gen = compute_fid_from_features(feat_gen, stats)
         fid_sharp = compute_fid_from_features(feat_sharp, stats)
-        print(f"FID GENERATED (ADM): {fid_gen:.4f}")
-        print(f"FID SHARPENED (ADM): {fid_sharp:.4f}")
+        print(f"FID SHARPENED (ADM): {fid_sharp:.4f} (unsharpened baseline: {ONESTEP_FID_BASELINE})")
         results["fid"] = {
-            "generated": fid_gen,
+            "generated": ONESTEP_FID_BASELINE,
             "sharpened": fid_sharp,
             "fid_statistics_file": stats,
         }
